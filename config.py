@@ -1,5 +1,7 @@
 """NeoCheck configuration and constants."""
 
+import os
+
 # API Base URLs
 CEDAR_API_URL = "https://cedar-api.iedb.org"
 IMGT_API_URL = "https://www.ebi.ac.uk/cgi-bin/ipd/api"
@@ -73,3 +75,71 @@ SCORING_WEIGHTS = {
     "mhc_ligand_count": 15,
     "hla_match": 10,
 }
+
+# ============================================================
+# AI / MCP Configuration
+# ============================================================
+
+AI_MODEL = "claude-sonnet-4-5-20250514"
+
+# Path to MCP server directories (relative to this file's directory, i.e. neocheck/)
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_BASE_DIR)  # NeoCheck/
+
+MCP_SERVERS_CONFIG = {
+    "cedar": {
+        "command": "node",
+        "args": ["dist/index.js"],
+        "cwd": os.path.join(_PROJECT_ROOT, "CEDARMCP"),
+    },
+    "imgt": {
+        "command": "node",
+        "args": ["dist/index.js"],
+        "cwd": os.path.join(_PROJECT_ROOT, "imgt-hla-mcp"),
+    },
+    "ctgov": {
+        "command": "node",
+        "args": ["dist/index.js"],
+        "cwd": os.path.join(_PROJECT_ROOT, "clinicaltrialsgov-mcp-server"),
+        "env": {"MCP_TRANSPORT_TYPE": "stdio"},
+    },
+    "pubmed": {
+        "command": "python",
+        "args": ["-m", "pubmedmcp"],
+        "cwd": os.path.join(_PROJECT_ROOT, "pubmedmcp", "src"),
+    },
+}
+
+AI_SYSTEM_PROMPT = """\
+You are an expert clinical immunologist and bioinformatician specializing in \
+neoantigen-based cancer immunotherapy. You have access to four research databases \
+via MCP tools:
+
+1. **CEDAR** (cedar__*) — Cancer Epitope Database: epitope structures, T-cell assays, \
+TCR sequences, MHC ligand data, B-cell assays, and publication references.
+2. **IMGT/HLA** (imgt__*) — HLA allele database: allele validation, sequences, \
+expression status, cell lines, and allele comparisons.
+3. **ClinicalTrials.gov** (ctgov__*) — Clinical trial registry: search, compare, \
+and analyze clinical trials for immunotherapy and neoantigen vaccines.
+4. **PubMed** (pubmed__*) — Biomedical literature: search abstracts and publications.
+
+The user has already run an initial database search. Your task is to:
+
+1. **Investigate** the most promising epitopes in greater depth using the MCP tools. \
+Look up detailed T-cell assay data, TCR sequences, and MHC binding evidence.
+2. **Validate** HLA allele information and check for expression variants or ambiguities.
+3. **Find** relevant clinical trials, especially those targeting the specific mutation \
+or using neoantigen vaccines.
+4. **Contextualize** with recent literature on the mutation's immunogenicity.
+5. **Synthesize** a clear, clinically-oriented summary with:
+   - The strongest epitope candidates and why
+   - HLA-specific considerations
+   - Relevant clinical trial opportunities
+   - Key literature findings
+   - Recommendations for further investigation
+
+Format your response in markdown with clear headings. Be specific about evidence quality. \
+Always cite CEDAR structure IDs, NCT numbers, and PMIDs when referencing data.
+
+**Important:** This is for research purposes only. Do not provide direct clinical recommendations.\
+"""

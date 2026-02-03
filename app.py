@@ -3,6 +3,7 @@
 Main Streamlit application.
 """
 
+import json
 import sys
 import os
 from datetime import datetime
@@ -14,7 +15,7 @@ import pandas as pd
 # Add neocheck directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import GENE_MUTATIONS, EXAMPLES, CANCER_TYPES
+from config import GENE_MUTATIONS, EXAMPLES, CANCER_TYPES, AI_MODEL, AI_SYSTEM_PROMPT, MCP_SERVERS_CONFIG
 from utils.validators import (
     validate_mutation,
     validate_hla_allele,
@@ -32,27 +33,342 @@ def _esc(text: str) -> str:
 
 # -- Page config --
 st.set_page_config(
-    page_title="NeoCheck - Neoantigen HLA Compatibility",
-    page_icon="\U0001f9ec",
+    page_title="NeoCheck",
+    page_icon="N",
     layout="wide",
 )
 
-# -- Custom CSS --
+# -- Apple-inspired CSS --
 st.markdown("""
 <style>
-    .main-header { font-size: 2.5rem; font-weight: bold; color: #1f77b4; }
-    .stMetric { text-align: center; }
-    div[data-testid="stExpander"] details summary { font-weight: 600; }
+/* ========================================
+   APPLE-INSPIRED THEME FOR NEOCHECK
+   ======================================== */
+
+/* --- Global Typography --- */
+html, body, [class*="css"] {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text',
+                 'Inter', 'Helvetica Neue', sans-serif;
+}
+
+/* Main container — reduced top padding, constrained width */
+.main .block-container {
+    padding-top: 1rem;
+    padding-bottom: 3rem;
+    padding-left: 4rem;
+    padding-right: 4rem;
+    max-width: 1200px;
+}
+
+/* --- Headings --- */
+h1 {
+    font-weight: 600 !important;
+    font-size: 2.4rem !important;
+    letter-spacing: -0.02em !important;
+    color: #1d1d1f !important;
+}
+
+h2 {
+    font-weight: 500 !important;
+    font-size: 1.6rem !important;
+    letter-spacing: -0.01em !important;
+    color: #1d1d1f !important;
+    margin-top: 2.5rem !important;
+    margin-bottom: 1rem !important;
+}
+
+h3 {
+    font-weight: 500 !important;
+    font-size: 1.2rem !important;
+    color: #1d1d1f !important;
+    letter-spacing: -0.005em !important;
+}
+
+/* --- Body text --- */
+p, li, span, label {
+    font-weight: 400;
+    color: #1d1d1f;
+    line-height: 1.6;
+}
+
+.stCaption, [data-testid="stCaptionContainer"] {
+    color: #86868b !important;
+    font-size: 0.85rem !important;
+}
+
+/* --- Cards (st.container with border) --- */
+[data-testid="stVerticalBlockBorderWrapper"] {
+    border: none !important;
+    border-radius: 16px !important;
+    background: #ffffff !important;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04) !important;
+    padding: 1.5rem !important;
+    margin-bottom: 1rem !important;
+    transition: box-shadow 0.2s ease;
+}
+
+[data-testid="stVerticalBlockBorderWrapper"]:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04) !important;
+}
+
+/* --- Primary Buttons (pill) --- */
+[data-testid="stBaseButton-primary"] {
+    background-color: #0071e3 !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 980px !important;
+    padding: 0.65rem 1.8rem !important;
+    font-weight: 500 !important;
+    font-size: 0.95rem !important;
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+[data-testid="stBaseButton-primary"]:hover {
+    background-color: #0077ed !important;
+    transform: scale(1.01);
+}
+
+[data-testid="stBaseButton-primary"]:active {
+    background-color: #006edb !important;
+    transform: scale(0.99);
+}
+
+/* --- Secondary Buttons (ghost) --- */
+[data-testid="stBaseButton-secondary"] {
+    background-color: transparent !important;
+    color: #0071e3 !important;
+    border: 1px solid #d2d2d7 !important;
+    border-radius: 980px !important;
+    padding: 0.5rem 1.4rem !important;
+    font-weight: 500 !important;
+    font-size: 0.88rem !important;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+[data-testid="stBaseButton-secondary"]:hover {
+    background-color: rgba(0,113,227,0.04) !important;
+    border-color: #0071e3 !important;
+}
+
+/* --- Download Buttons --- */
+[data-testid="stDownloadButton"] button {
+    background-color: transparent !important;
+    color: #0071e3 !important;
+    border: 1.5px solid #d2d2d7 !important;
+    border-radius: 980px !important;
+    padding: 0.55rem 1.5rem !important;
+    font-weight: 500 !important;
+    font-size: 0.88rem !important;
+    transition: all 0.2s ease;
+}
+
+[data-testid="stDownloadButton"] button:hover {
+    background-color: #0071e3 !important;
+    color: #ffffff !important;
+    border-color: #0071e3 !important;
+}
+
+/* --- Text Inputs --- */
+[data-testid="stTextInput"] input {
+    border: 1px solid #d2d2d7 !important;
+    border-radius: 12px !important;
+    padding: 0.65rem 1rem !important;
+    font-size: 0.95rem !important;
+    background-color: #ffffff !important;
+    color: #1d1d1f !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+[data-testid="stTextInput"] input:focus {
+    border-color: #0071e3 !important;
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.15) !important;
+    outline: none !important;
+}
+
+[data-testid="stTextInput"] label {
+    font-weight: 500 !important;
+    font-size: 0.88rem !important;
+    color: #1d1d1f !important;
+}
+
+/* --- Text Area --- */
+[data-testid="stTextArea"] textarea {
+    border: 1px solid #d2d2d7 !important;
+    border-radius: 12px !important;
+    padding: 0.75rem 1rem !important;
+    font-size: 0.95rem !important;
+    background-color: #ffffff !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+[data-testid="stTextArea"] textarea:focus {
+    border-color: #0071e3 !important;
+    box-shadow: 0 0 0 3px rgba(0,113,227,0.15) !important;
+}
+
+/* --- Select Boxes --- */
+[data-testid="stSelectbox"] > div > div {
+    border: 1px solid #d2d2d7 !important;
+    border-radius: 12px !important;
+    background-color: #ffffff !important;
+}
+
+/* --- Metrics --- */
+[data-testid="stMetric"] {
+    background: #ffffff;
+    border-radius: 16px;
+    padding: 1.25rem 1.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    text-align: center;
+}
+
+[data-testid="stMetricValue"] {
+    font-size: 2rem !important;
+    font-weight: 600 !important;
+    color: #1d1d1f !important;
+    letter-spacing: -0.02em !important;
+}
+
+[data-testid="stMetricLabel"] {
+    font-size: 0.82rem !important;
+    font-weight: 500 !important;
+    color: #86868b !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.04em !important;
+}
+
+[data-testid="stMetricDelta"] {
+    font-size: 0.8rem !important;
+    color: #86868b !important;
+}
+
+/* --- Expanders --- */
+[data-testid="stExpander"] {
+    border: 1px solid #e8e8ed !important;
+    border-radius: 12px !important;
+    background: #ffffff !important;
+    overflow: hidden;
+    margin-bottom: 0.75rem !important;
+}
+
+[data-testid="stExpander"] details summary {
+    font-weight: 500 !important;
+    font-size: 0.95rem !important;
+    color: #1d1d1f !important;
+    padding: 0.75rem 1rem !important;
+}
+
+[data-testid="stExpander"] details summary:hover {
+    background-color: #f5f5f7 !important;
+}
+
+/* --- Tabs --- */
+[data-testid="stTabs"] [role="tablist"] {
+    gap: 0 !important;
+    border-bottom: 1px solid #e8e8ed !important;
+}
+
+[data-testid="stTabs"] button[role="tab"] {
+    font-weight: 500 !important;
+    font-size: 0.9rem !important;
+    color: #86868b !important;
+    border-bottom: 2px solid transparent !important;
+    padding: 0.75rem 1.5rem !important;
+    background: transparent !important;
+    border-radius: 0 !important;
+    transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+[data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+    color: #0071e3 !important;
+    border-bottom: 2px solid #0071e3 !important;
+    font-weight: 600 !important;
+}
+
+[data-testid="stTabs"] button[role="tab"]:hover {
+    color: #1d1d1f !important;
+}
+
+/* --- DataFrames --- */
+[data-testid="stDataFrame"] {
+    border-radius: 12px !important;
+    overflow: hidden;
+    border: 1px solid #e8e8ed !important;
+}
+
+/* --- Progress Bar --- */
+.stProgress > div > div {
+    background-color: #0071e3 !important;
+    border-radius: 980px !important;
+    height: 4px !important;
+}
+
+.stProgress > div {
+    background-color: #e8e8ed !important;
+    border-radius: 980px !important;
+    height: 4px !important;
+}
+
+/* --- Alerts --- */
+[data-testid="stAlert"] {
+    border-radius: 12px !important;
+    border: none !important;
+    font-size: 0.9rem !important;
+}
+
+/* --- Code Blocks --- */
+code {
+    background: #f5f5f7 !important;
+    color: #1d1d1f !important;
+    border-radius: 6px !important;
+    padding: 2px 8px !important;
+    font-size: 0.88rem !important;
+}
+
+/* --- Links --- */
+a {
+    color: #0071e3 !important;
+    text-decoration: none !important;
+}
+a:hover {
+    text-decoration: underline !important;
+}
+
+/* --- Horizontal Rules (subtle) --- */
+hr {
+    border: none !important;
+    height: 1px !important;
+    background: #e8e8ed !important;
+    margin: 2.5rem 0 !important;
+}
+
+/* --- JSON viewer --- */
+[data-testid="stJson"] {
+    border-radius: 12px !important;
+    border: 1px solid #e8e8ed !important;
+}
+
+/* --- Sliders --- */
+[data-testid="stSlider"] [role="slider"] {
+    background-color: #0071e3 !important;
+}
+
+/* --- Hide Streamlit branding --- */
+#MainMenu { visibility: hidden; }
+footer { visibility: hidden; }
+header { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 # -- Header --
-st.title("\U0001f9ec NeoCheck: Neoantigen HLA Compatibility Checker")
+st.title("NeoCheck")
 st.markdown(
-    "Analyze cancer mutations and HLA types to identify personalized immunotherapy opportunities.  \n"
-    "**Data sources:** CEDAR, IMGT/HLA, ClinicalTrials.gov, PubMed"
+    '<p style="font-size: 1.1rem; color: #86868b; font-weight: 400; margin-top: -0.5rem;">'
+    'Analyze cancer mutations and HLA types to identify personalized immunotherapy opportunities.'
+    '</p>',
+    unsafe_allow_html=True,
 )
-st.markdown("---")
+st.caption("Data sources: CEDAR  |  IMGT/HLA  |  ClinicalTrials.gov  |  PubMed")
 
 # ============================================================
 # Input Section
@@ -70,13 +386,13 @@ def _load_example(vals: dict):
     st.session_state["hla_c2_input"] = vals.get("hla_c2", "")
 
 
-col_mut, col_hla = st.columns(2)
+col_mut, col_hla = st.columns(2, gap="large")
 
 with col_mut:
     st.subheader("Mutation Information")
 
     # Example buttons (placed before widgets so callback sets state before render)
-    st.markdown("**Quick examples:**")
+    st.caption("Quick examples")
     example_cols = st.columns(len(EXAMPLES))
     for i, (label, vals) in enumerate(EXAMPLES.items()):
         with example_cols[i]:
@@ -224,7 +540,7 @@ def cached_search_publications(gene: str, mutation: str, max_results: int):
 # Run Analysis
 # ============================================================
 
-if st.button("\U0001f50d **Run Analysis**", type="primary", use_container_width=True):
+if st.button("Run Analysis", type="primary", use_container_width=True):
     inputs = get_validated_inputs()
     if inputs:
         results: dict[str, Any] = {
@@ -233,10 +549,14 @@ if st.button("\U0001f50d **Run Analysis**", type="primary", use_container_width=
             "hla_alleles": inputs["hla_alleles"],
         }
 
-        progress = st.progress(0, text="Starting analysis...")
+        status_text = st.empty()
+        progress_bar = st.progress(0)
+
+        status_text.caption("Starting analysis...")
 
         # Step 1: Epitope search
-        progress.progress(10, text="Searching CEDAR for epitopes...")
+        status_text.caption("Searching CEDAR for epitopes...")
+        progress_bar.progress(10)
         try:
             epitope_results = cached_search_epitopes(
                 mutation=inputs["mutation"],
@@ -250,7 +570,8 @@ if st.button("\U0001f50d **Run Analysis**", type="primary", use_container_width=
             results["epitopes"] = {"epitopes": [], "total_count": 0, "hla_matched_count": 0}
 
         # Step 2: HLA validation
-        progress.progress(30, text="Validating HLA alleles with IMGT...")
+        status_text.caption("Validating HLA alleles with IMGT...")
+        progress_bar.progress(30)
         try:
             # Build full allele names for IMGT
             full_alleles = []
@@ -264,7 +585,8 @@ if st.button("\U0001f50d **Run Analysis**", type="primary", use_container_width=
             results["hla_info"] = []
 
         # Step 3: Clinical trials
-        progress.progress(50, text="Searching ClinicalTrials.gov...")
+        status_text.caption("Searching ClinicalTrials.gov...")
+        progress_bar.progress(50)
         try:
             trials = cached_search_trials(
                 inputs["gene"], inputs["mutation"],
@@ -276,7 +598,8 @@ if st.button("\U0001f50d **Run Analysis**", type="primary", use_container_width=
             results["trials"] = []
 
         # Step 4: Publications
-        progress.progress(70, text="Searching PubMed...")
+        status_text.caption("Searching PubMed...")
+        progress_bar.progress(70)
         try:
             publications = cached_search_publications(
                 inputs["gene"], inputs["mutation"], inputs["max_pubs"],
@@ -287,7 +610,8 @@ if st.button("\U0001f50d **Run Analysis**", type="primary", use_container_width=
             results["publications"] = []
 
         # Step 5: Get details for top epitopes
-        progress.progress(85, text="Fetching detailed data for top epitopes...")
+        status_text.caption("Fetching detailed data for top epitopes...")
+        progress_bar.progress(85)
         top_epitopes = results["epitopes"].get("epitopes", [])[:3]
         detailed_epitopes = []
         for ep in top_epitopes:
@@ -298,7 +622,9 @@ if st.button("\U0001f50d **Run Analysis**", type="primary", use_container_width=
                 detailed_epitopes.append(None)
         results["detailed_epitopes"] = detailed_epitopes
 
-        progress.progress(100, text="Analysis complete!")
+        progress_bar.progress(100)
+        status_text.empty()
+        progress_bar.empty()
         st.session_state["results"] = results
 
 
@@ -309,14 +635,19 @@ def _render_epitope_card(ep: dict[str, Any], rank: int, detail: dict[str, Any] |
 
         with c1:
             seq = ep.get("linear_sequence", "N/A")
-            st.markdown(f"### #{rank}: `{seq}`")
+            st.markdown(f"### {seq}")
+            st.caption(f"Rank {rank}")
             alleles = ep.get("mhc_alleles") or []
             st.markdown(f"**HLA Restriction:** {', '.join(_esc(a) for a in alleles) if alleles else 'N/A'}")
             st.markdown(f"**Mutation:** {ep.get('mutation', 'N/A')}")
 
-            match_label = " \u2705 **HLA Match**" if ep.get("hla_matched") else ""
-            if match_label:
-                st.markdown(match_label)
+            if ep.get("hla_matched"):
+                st.markdown(
+                    '<span style="display:inline-block;background:#e8f5e9;color:#2e7d32;'
+                    'font-size:0.82rem;font-weight:600;padding:3px 12px;border-radius:980px;">'
+                    'HLA Match</span>',
+                    unsafe_allow_html=True,
+                )
 
             # Summary sentence instead of numeric score
             summary = summarize_epitope(ep)
@@ -384,7 +715,6 @@ if "results" in st.session_state:
     hla_info = results.get("hla_info", [])
     detailed_epitopes = results.get("detailed_epitopes", [])
 
-    st.markdown("---")
     st.header("Results")
 
     # -- Summary metrics --
@@ -399,7 +729,7 @@ if "results" in st.session_state:
     m4.metric("Publications", len(publications))
 
     # -- Epitope Rankings --
-    st.header("\U0001f52c Epitope Analysis")
+    st.header("Epitope Analysis")
 
     if not epitopes:
         st.info("No epitopes found for this mutation. Try removing the neoantigen filter in Advanced Options.")
@@ -420,7 +750,7 @@ if "results" in st.session_state:
                     "Sequence": ep.get("linear_sequence", "N/A"),
                     "Mutation": ep.get("mutation", ""),
                     "Summary": summarize_epitope(ep),
-                    "HLA Match": "\u2705" if ep.get("hla_matched") else "",
+                    "HLA Match": "Yes" if ep.get("hla_matched") else "",
                     "MHC Alleles": "; ".join(ep.get("mhc_alleles") or []),
                     "T-cell Assays": ep.get("tcell_assay_count", 0),
                     "TCRs": ep.get("tcr_count", 0),
@@ -432,7 +762,7 @@ if "results" in st.session_state:
             st.json(epitope_data)
 
     # -- Clinical Trials --
-    st.header("\U0001f3e5 Relevant Clinical Trials")
+    st.header("Clinical Trials")
     if not trials:
         st.info("No matching clinical trials found.")
     else:
@@ -453,7 +783,7 @@ if "results" in st.session_state:
                     st.markdown(f"[View on ClinicalTrials.gov](https://clinicaltrials.gov/study/{nct})")
 
     # -- Publications --
-    st.header("\U0001f4da Recent Publications")
+    st.header("Publications")
     if not publications:
         st.info("No matching publications found.")
     else:
@@ -470,7 +800,7 @@ if "results" in st.session_state:
                     st.markdown(f"[PubMed](https://pubmed.ncbi.nlm.nih.gov/{pmid})")
 
     # -- HLA Info --
-    st.header("\U0001f30d HLA Allele Information")
+    st.header("HLA Allele Information")
     if hla_info:
         for info in hla_info:
             name = info.get("name", info.get("allele", "Unknown"))
@@ -497,14 +827,13 @@ if "results" in st.session_state:
         st.info("No HLA information available.")
 
     # -- Disclaimer --
-    st.markdown("---")
     st.warning(
         "**Disclaimer:** This tool is for research purposes only. "
         "Results should not be used for clinical decision-making without professional medical review."
     )
 
     # -- Export buttons --
-    st.header("\U0001f4e5 Export Results")
+    st.header("Export Results")
     exp1, exp2, exp3 = st.columns(3)
     mutation_str = results.get("mutation", "unknown")
     ts = datetime.now().strftime("%Y%m%d")
@@ -530,5 +859,155 @@ if "results" in st.session_state:
             file_name=f"neocheck_{mutation_str}_{ts}.html",
             mime="text/html",
         )
+
+    # ============================================================
+    # AI Analysis Section
+    # ============================================================
+
+    st.header("AI-Powered Analysis")
+    st.markdown(
+        "Use Claude AI with MCP tools to perform deeper investigation of your results. "
+        "Claude will query CEDAR, IMGT/HLA, ClinicalTrials.gov, and PubMed for additional context."
+    )
+
+    # API key input — check env var first, then UI
+    env_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if env_key:
+        st.success("API key loaded from `ANTHROPIC_API_KEY` environment variable.")
+        api_key = env_key
+    else:
+        api_key = st.text_input(
+            "Anthropic API Key",
+            type="password",
+            key="anthropic_api_key",
+            placeholder="sk-ant-...",
+            help="Get your key at console.anthropic.com. Claude Max subscription does NOT include API access.",
+        )
+
+    # Custom query
+    user_query = st.text_area(
+        "Custom question (optional)",
+        key="ai_query",
+        placeholder="e.g., Which epitope has the strongest T-cell evidence for this patient's HLA type?",
+        help="Leave blank for a general clinical interpretation.",
+    )
+
+    # Model selection
+    model = st.selectbox(
+        "Model",
+        options=["claude-sonnet-4-5-20250514", "claude-haiku-4-20250414"],
+        index=0,
+        help="Sonnet is recommended for best analysis quality.",
+    )
+
+    # Check MCP server availability
+    mcp_available = True
+    missing_servers = []
+    for name, cfg in MCP_SERVERS_CONFIG.items():
+        cwd = cfg.get("cwd", "")
+        if name == "pubmed":
+            # Python server — check if module is importable via cwd
+            if not os.path.isdir(cwd):
+                missing_servers.append(name)
+        else:
+            # Node.js server — check if dist/index.js exists
+            dist_path = os.path.join(cwd, "dist", "index.js")
+            if not os.path.isfile(dist_path):
+                missing_servers.append(name)
+
+    if missing_servers:
+        mcp_available = False
+        st.warning(
+            f"MCP servers not built: **{', '.join(missing_servers)}**. "
+            "The AI tab requires the MCP servers to be compiled first. See the README for build instructions:\n\n"
+            "```bash\n"
+            "# CEDAR\n"
+            "cd CEDARMCP && npm install && npm run build\n\n"
+            "# IMGT/HLA\n"
+            "cd imgt-hla-mcp && npm install && npm run build\n\n"
+            "# ClinicalTrials.gov (requires bun)\n"
+            "cd clinicaltrialsgov-mcp-server && bun install && bun run build\n\n"
+            "# PubMed\n"
+            "cd pubmedmcp && pip install -e .\n"
+            "```"
+        )
+
+    # Run AI Analysis button
+    can_run = bool(api_key) and mcp_available
+    if st.button(
+        "Run AI Analysis",
+        type="primary",
+        use_container_width=True,
+        disabled=not can_run,
+    ):
+        from clients.mcp_manager import MCPManager
+        from clients.ai_client import AIAnalyzer
+
+        status_placeholder = st.empty()
+        progress_placeholder = st.empty()
+
+        def update_status(msg: str):
+            status_placeholder.info(msg)
+
+        try:
+            update_status("Starting MCP servers...")
+            mcp_manager = MCPManager(MCP_SERVERS_CONFIG)
+
+            import asyncio
+            server_statuses = asyncio.run(mcp_manager.start_all())
+
+            # Show server status
+            for sname, sstatus in server_statuses.items():
+                if sstatus.startswith("ok"):
+                    progress_placeholder.success(f"**{sname.upper()}**: {sstatus}")
+                else:
+                    progress_placeholder.error(f"**{sname.upper()}**: {sstatus}")
+
+            update_status("Sending to Claude for analysis...")
+
+            analyzer = AIAnalyzer(api_key=api_key, model=model)
+            ai_result = analyzer.analyze_sync(
+                results=results,
+                mcp_manager=mcp_manager,
+                system_prompt=AI_SYSTEM_PROMPT,
+                user_query=user_query.strip() if user_query and user_query.strip() else None,
+                on_status=update_status,
+            )
+
+            # Clean up servers
+            asyncio.run(mcp_manager.stop_all())
+
+            status_placeholder.success("AI analysis complete.")
+            st.session_state["ai_result"] = ai_result
+
+        except Exception as e:
+            status_placeholder.error(f"AI analysis failed: {e}")
+            # Try to clean up
+            try:
+                import asyncio
+                asyncio.run(mcp_manager.stop_all())
+            except Exception:
+                pass
+
+    # Display AI results
+    if "ai_result" in st.session_state:
+        ai_result = st.session_state["ai_result"]
+
+        st.markdown("### Claude's Analysis")
+        st.markdown(ai_result.get("response", "No response"))
+
+        tool_calls = ai_result.get("tool_calls", [])
+        if tool_calls:
+            with st.expander(f"MCP Tool Calls ({len(tool_calls)} calls made)"):
+                for i, tc in enumerate(tool_calls, 1):
+                    tool_name = tc.get("tool", "?")
+                    args = tc.get("args", {})
+                    preview = tc.get("result_preview", "")
+                    st.markdown(f"**{i}. {_esc(tool_name)}**")
+                    st.code(json.dumps(args, indent=2), language="json")
+                    if preview:
+                        st.caption(f"Result preview: {_esc(preview)}")
+                    st.markdown("")
+
 
 
