@@ -34,6 +34,9 @@ class MCPServer:
 
     async def start(self) -> None:
         """Spawn the MCP server subprocess."""
+        print(f"[MCP:{self.name}] Starting: {self.command} {' '.join(self.args)}")
+        print(f"[MCP:{self.name}] Working directory: {self.cwd}")
+
         env = {**os.environ}
         if self.env:
             env.update(self.env)
@@ -46,10 +49,11 @@ class MCPServer:
             cwd=self.cwd,
             env=env,
         )
+        print(f"[MCP:{self.name}] Process started (pid={self._process.pid})")
         logger.info(f"[{self.name}] Started (pid={self._process.pid})")
 
-    async def _send_request(self, method: str, params: dict | None = None) -> dict:
-        """Send a JSON-RPC request and read the response."""
+    async def _send_request(self, method: str, params: dict | None = None, timeout: float = 60.0) -> dict:
+        """Send a JSON-RPC request and read the response (JSON Lines protocol)."""
         if not self._process or not self._process.stdin or not self._process.stdout:
             raise RuntimeError(f"[{self.name}] Server not running")
 
@@ -62,23 +66,27 @@ class MCPServer:
             if params is not None:
                 request["params"] = params
 
-            payload = json.dumps(request)
-            message = f"Content-Length: {len(payload)}\r\n\r\n{payload}"
+            # Use JSON Lines format (newline-delimited JSON)
+            payload = json.dumps(request) + "\n"
 
-            self._process.stdin.write(message.encode())
+            print(f"[MCP:{self.name}] Sending {method}...")
+            self._process.stdin.write(payload.encode())
             await self._process.stdin.drain()
 
-            # Read response: parse Content-Length header, then body
-            response = await self._read_response()
-            return response
+            # Read response as JSON line
+            try:
+                response = await asyncio.wait_for(self._read_json_line(), timeout=timeout)
+                print(f"[MCP:{self.name}] Received response for {method}")
+                return response
+            except asyncio.TimeoutError:
+                print(f"[MCP:{self.name}] TIMEOUT waiting for {method} response after {timeout}s")
+                raise
 
-    async def _read_response(self) -> dict:
-        """Read a JSON-RPC response from stdout using Content-Length framing."""
+    async def _read_json_line(self) -> dict:
+        """Read a single JSON line from stdout."""
         if not self._process or not self._process.stdout:
             raise RuntimeError(f"[{self.name}] No stdout")
 
-        # Read headers until we find Content-Length
-        content_length = 0
         while True:
             line = await self._process.stdout.readline()
             if not line:
@@ -97,61 +105,85 @@ class MCPServer:
                 )
 
             line_str = line.decode().strip()
-            if line_str == "":
-                # Empty line = end of headers
-                break
-            if line_str.lower().startswith("content-length:"):
-                content_length = int(line_str.split(":", 1)[1].strip())
+            if not line_str:
+                # Empty line, skip
+                continue
 
-        if content_length == 0:
-            raise RuntimeError(f"[{self.name}] No Content-Length in response")
-
-        # Read body
-        body = await self._process.stdout.readexactly(content_length)
-        return json.loads(body)
+            try:
+                return json.loads(line_str)
+            except json.JSONDecodeError:
+                # Not valid JSON, might be debug output, skip
+                print(f"[MCP:{self.name}] Skipping non-JSON line: {line_str[:100]}")
+                continue
 
     async def initialize(self) -> dict:
         """Perform the MCP initialize handshake."""
-        response = await self._send_request("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "neocheck",
-                "version": "1.0.0",
-            },
-        })
+        print(f"[MCP:{self.name}] Sending initialize request...")
+
+        try:
+            response = await self._send_request("initialize", {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "neocheck",
+                    "version": "1.0.0",
+                },
+            }, timeout=30.0)
+        except asyncio.TimeoutError:
+            # Try to read stderr for more info
+            stderr_msg = ""
+            if self._process and self._process.stderr:
+                try:
+                    stderr_data = await asyncio.wait_for(self._process.stderr.read(4096), timeout=1.0)
+                    stderr_msg = stderr_data.decode(errors='replace')
+                except Exception:
+                    pass
+            raise RuntimeError(f"[{self.name}] Initialize timed out after 30s. stderr: {stderr_msg}")
+
+        print(f"[MCP:{self.name}] Initialize response received")
 
         if "error" in response:
             raise RuntimeError(f"[{self.name}] Init error: {response['error']}")
 
-        # Send initialized notification (no response expected)
+        # Send initialized notification (no response expected) - JSON Lines format
         notification = {
             "jsonrpc": "2.0",
             "method": "notifications/initialized",
         }
-        payload = json.dumps(notification)
-        message = f"Content-Length: {len(payload)}\r\n\r\n{payload}"
+        payload = json.dumps(notification) + "\n"
         if self._process and self._process.stdin:
-            self._process.stdin.write(message.encode())
+            self._process.stdin.write(payload.encode())
             await self._process.stdin.drain()
 
+        print(f"[MCP:{self.name}] Initialization complete")
         return response.get("result", {})
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """Get the list of tools from this server."""
-        response = await self._send_request("tools/list", {})
+        print(f"[MCP:{self.name}] Requesting tools list...")
+
+        try:
+            response = await asyncio.wait_for(
+                self._send_request("tools/list", {}),
+                timeout=15.0  # 15 second timeout for tools list
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"[{self.name}] tools/list timed out after 15s")
+
         if "error" in response:
             raise RuntimeError(f"[{self.name}] tools/list error: {response['error']}")
 
         self._tools = response.get("result", {}).get("tools", [])
+        print(f"[MCP:{self.name}] Found {len(self._tools)} tools")
         return self._tools
 
     async def call_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call a tool on this server."""
+        # Use longer timeout for tool calls - external API queries can be slow
         response = await self._send_request("tools/call", {
             "name": tool_name,
             "arguments": arguments,
-        })
+        }, timeout=120.0)  # 2 minutes for external API calls
 
         if "error" in response:
             return {
@@ -205,7 +237,12 @@ class MCPManager:
         """Start all servers, run initialize + list_tools. Returns status per server."""
         statuses: dict[str, str] = {}
 
+        print(f"\n{'='*60}")
+        print(f"Starting {len(self._servers)} MCP servers...")
+        print(f"{'='*60}\n")
+
         for prefix, server in self._servers.items():
+            print(f"\n--- Starting {prefix.upper()} ---")
             try:
                 await server.start()
                 await server.initialize()
@@ -225,9 +262,17 @@ class MCPManager:
                     })
 
                 statuses[prefix] = f"ok ({len(tools)} tools)"
+                print(f"[MCP:{prefix}] SUCCESS: {len(tools)} tools loaded")
             except Exception as e:
                 statuses[prefix] = f"error: {e}"
+                print(f"[MCP:{prefix}] FAILED: {e}")
                 logger.error(f"[{prefix}] Failed to start: {e}")
+
+        print(f"\n{'='*60}")
+        ok_count = sum(1 for s in statuses.values() if s.startswith("ok"))
+        print(f"MCP startup complete: {ok_count}/{len(statuses)} servers running")
+        print(f"Total tools available: {len(self._all_tools)}")
+        print(f"{'='*60}\n")
 
         return statuses
 

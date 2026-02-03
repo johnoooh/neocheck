@@ -9,13 +9,17 @@ import os
 from datetime import datetime
 from typing import Any
 
+# Fix asyncio event loop issues with nested async calls (needed for MCP tool calls)
+import nest_asyncio
+nest_asyncio.apply()
+
 import streamlit as st
 import pandas as pd
 
 # Add neocheck directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import GENE_MUTATIONS, EXAMPLES, CANCER_TYPES, AI_MODEL, AI_SYSTEM_PROMPT, MCP_SERVERS_CONFIG
+from config import GENE_MUTATIONS, EXAMPLES, CANCER_TYPES, AI_MODEL, CHAT_SYSTEM_PROMPT, MCP_SERVERS_CONFIG
 from utils.validators import (
     validate_mutation,
     validate_hla_allele,
@@ -654,6 +658,8 @@ def _render_epitope_card(ep: dict[str, Any], rank: int, detail: dict[str, Any] |
             st.markdown(f"*{_esc(summary)}*")
 
         with c2:
+            score = ep.get("score", 0)
+            st.metric("Score", f"{score}/100")
             st.metric("T-cell Assays", ep.get("tcell_assay_count", 0))
             st.metric("TCRs", ep.get("tcr_count", 0))
             pdb = ep.get("pdb_ids") or []
@@ -734,7 +740,7 @@ if "results" in st.session_state:
     if not epitopes:
         st.info("No epitopes found for this mutation. Try removing the neoantigen filter in Advanced Options.")
     else:
-        tab_top, tab_all, tab_raw = st.tabs(["Top Epitopes", "All Epitopes", "Raw Data"])
+        tab_top, tab_all, tab_scoring, tab_raw = st.tabs(["Top Epitopes", "All Epitopes", "Scoring", "Raw Data"])
 
         with tab_top:
             for i, ep in enumerate(epitopes[:3]):
@@ -757,6 +763,29 @@ if "results" in st.session_state:
                     "PDB": "; ".join(ep.get("pdb_ids") or []),
                 })
             st.dataframe(pd.DataFrame(df_data), use_container_width=True, hide_index=True)
+
+        with tab_scoring:
+            st.markdown("""
+## How Epitopes Are Scored
+
+Each epitope receives a composite score from 0-100 based on the strength of available evidence.
+Higher scores indicate more robust experimental support for immunogenicity.
+
+| Component | Max Points | How It's Calculated |
+|-----------|------------|---------------------|
+| **T-cell assays** | 25 | Log scale: 1 assay=5pts, 5 assays=15pts, 10+=25pts |
+| **Positive response ratio** | 20 | % of T-cell assays showing positive response × 20 |
+| **TCR sequences** | 20 | Known reactive T-cell receptors (scales 0-5+) |
+| **PDB structure** | 10 | 3D crystal structure available (binary) |
+| **MHC ligand assays** | 15 | Peptide-MHC binding evidence (scales 0-5+) |
+| **HLA match** | +10 | Bonus if epitope MHC matches patient's HLA |
+
+### Key Notes
+- **Positive response ratio is critical**: 10 T-cell assays with only 2 positive results
+  scores lower than 5 assays with 5 positive results
+- **HLA match** indicates the epitope may be presented by the patient's own MHC molecules
+- Scores help prioritize epitopes but should be interpreted alongside clinical context
+""")
 
         with tab_raw:
             st.json(epitope_data)
@@ -861,19 +890,19 @@ if "results" in st.session_state:
         )
 
     # ============================================================
-    # AI Analysis Section
+    # AI Chat Section
     # ============================================================
 
-    st.header("AI-Powered Analysis")
+    st.header("AI Assistant")
     st.markdown(
-        "Use Claude AI with MCP tools to perform deeper investigation of your results. "
-        "Claude will query CEDAR, IMGT/HLA, ClinicalTrials.gov, and PubMed for additional context."
+        "Chat with Claude AI about your patient's results. "
+        "Claude can query CEDAR, IMGT/HLA, ClinicalTrials.gov, and PubMed for additional context."
     )
 
-    # API key input — check env var first, then UI
+    # --- Setup: API key ---
     env_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if env_key:
-        st.success("API key loaded from `ANTHROPIC_API_KEY` environment variable.")
+        st.caption("API key loaded from environment variable.")
         api_key = env_key
     else:
         api_key = st.text_input(
@@ -881,24 +910,23 @@ if "results" in st.session_state:
             type="password",
             key="anthropic_api_key",
             placeholder="sk-ant-...",
-            help="Get your key at console.anthropic.com. Claude Max subscription does NOT include API access.",
+            help="Get your key at console.anthropic.com",
         )
 
-    # Custom query
-    user_query = st.text_area(
-        "Custom question (optional)",
-        key="ai_query",
-        placeholder="e.g., Which epitope has the strongest T-cell evidence for this patient's HLA type?",
-        help="Leave blank for a general clinical interpretation.",
-    )
-
-    # Model selection
-    model = st.selectbox(
-        "Model",
-        options=["claude-sonnet-4-5-20250514", "claude-haiku-4-20250414"],
-        index=0,
-        help="Sonnet is recommended for best analysis quality.",
-    )
+    # Model selection in sidebar-style expander
+    with st.expander("Settings", expanded=False):
+        model = st.selectbox(
+            "Model",
+            options=[
+                "claude-haiku-4-5",                 # Claude Haiku 4.5 (latest, fast, cheap) - DEFAULT
+                "claude-sonnet-4-20250514",         # Claude Sonnet 4 (newest, best accuracy)
+                "claude-3-7-sonnet-20250219",       # Claude 3.7 Sonnet (very capable)
+                "claude-3-5-sonnet-20241022",       # Claude 3.5 Sonnet (stable fallback)
+            ],
+            index=0,  # Default to Haiku
+            key="chat_model",
+            help="Haiku is fast and cheap. Use Sonnet models for more complex analysis.",
+        )
 
     # Check MCP server availability
     mcp_available = True
@@ -906,11 +934,9 @@ if "results" in st.session_state:
     for name, cfg in MCP_SERVERS_CONFIG.items():
         cwd = cfg.get("cwd", "")
         if name == "pubmed":
-            # Python server — check if module is importable via cwd
             if not os.path.isdir(cwd):
                 missing_servers.append(name)
         else:
-            # Node.js server — check if dist/index.js exists
             dist_path = os.path.join(cwd, "dist", "index.js")
             if not os.path.isfile(dist_path):
                 missing_servers.append(name)
@@ -919,95 +945,176 @@ if "results" in st.session_state:
         mcp_available = False
         st.warning(
             f"MCP servers not built: **{', '.join(missing_servers)}**. "
-            "The AI tab requires the MCP servers to be compiled first. See the README for build instructions:\n\n"
-            "```bash\n"
-            "# CEDAR\n"
-            "cd CEDARMCP && npm install && npm run build\n\n"
-            "# IMGT/HLA\n"
-            "cd imgt-hla-mcp && npm install && npm run build\n\n"
-            "# ClinicalTrials.gov (requires bun)\n"
-            "cd clinicaltrialsgov-mcp-server && bun install && bun run build\n\n"
-            "# PubMed\n"
-            "cd pubmedmcp && pip install -e .\n"
-            "```"
+            "See README for build instructions."
         )
 
-    # Run AI Analysis button
-    can_run = bool(api_key) and mcp_available
-    if st.button(
-        "Run AI Analysis",
-        type="primary",
-        use_container_width=True,
-        disabled=not can_run,
+    # --- Initialize chat session state ---
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "mcp_session" not in st.session_state:
+        st.session_state.mcp_session = None
+    if "chat_processing" not in st.session_state:
+        st.session_state.chat_processing = False
+
+    # --- Context banner ---
+    st.caption(
+        f"Patient context: **{results.get('gene', '?')} {results.get('mutation', '?')}** | "
+        f"HLA: {', '.join(_esc(a) for a in results.get('hla_alleles', []))}"
+    )
+
+    # --- Display chat history ---
+    for msg in st.session_state.chat_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+            # Render saved HTML visualizations
+            for html_out in msg.get("html_outputs", []):
+                st.divider()
+                tool_name = html_out.get("tool", "visualization").replace("__", " › ")
+                st.caption(f"📊 Visualization from {tool_name}")
+                st.components.v1.html(
+                    html_out["html"],
+                    height=800,
+                    scrolling=True,
+                )
+                if html_out.get("summary"):
+                    with st.expander("Visualization Summary"):
+                        st.json(html_out["summary"])
+
+            # Show tool calls for assistant messages
+            if msg.get("tool_calls"):
+                with st.expander(f"Tool calls ({len(msg['tool_calls'])})"):
+                    for tc in msg["tool_calls"]:
+                        st.caption(f"**{tc.get('tool', '?')}**")
+                        st.code(json.dumps(tc.get("args", {}), indent=2), language="json")
+
+    # --- Chat input ---
+    can_chat = bool(api_key) and mcp_available
+    if prompt := st.chat_input(
+        "Ask about the patient's results...",
+        disabled=not can_chat or st.session_state.chat_processing,
     ):
-        from clients.mcp_manager import MCPManager
-        from clients.ai_client import AIAnalyzer
+        # Add user message to display immediately
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-        status_placeholder = st.empty()
-        progress_placeholder = st.empty()
+        # Set processing flag
+        st.session_state.chat_processing = True
 
-        def update_status(msg: str):
-            status_placeholder.info(msg)
+        # Generate response
+        with st.chat_message("assistant"):
+            thinking = st.empty()
+            thinking.caption("Thinking...")
 
-        try:
-            update_status("Starting MCP servers...")
-            mcp_manager = MCPManager(MCP_SERVERS_CONFIG)
-
-            import asyncio
-            server_statuses = asyncio.run(mcp_manager.start_all())
-
-            # Show server status
-            for sname, sstatus in server_statuses.items():
-                if sstatus.startswith("ok"):
-                    progress_placeholder.success(f"**{sname.upper()}**: {sstatus}")
-                else:
-                    progress_placeholder.error(f"**{sname.upper()}**: {sstatus}")
-
-            update_status("Sending to Claude for analysis...")
-
-            analyzer = AIAnalyzer(api_key=api_key, model=model)
-            ai_result = analyzer.analyze_sync(
-                results=results,
-                mcp_manager=mcp_manager,
-                system_prompt=AI_SYSTEM_PROMPT,
-                user_query=user_query.strip() if user_query and user_query.strip() else None,
-                on_status=update_status,
-            )
-
-            # Clean up servers
-            asyncio.run(mcp_manager.stop_all())
-
-            status_placeholder.success("AI analysis complete.")
-            st.session_state["ai_result"] = ai_result
-
-        except Exception as e:
-            status_placeholder.error(f"AI analysis failed: {e}")
-            # Try to clean up
             try:
                 import asyncio
-                asyncio.run(mcp_manager.stop_all())
-            except Exception:
-                pass
+                from clients.mcp_session import MCPSession
+                from clients.chat_client import ChatAnalyzer, format_results_for_chat
 
-    # Display AI results
-    if "ai_result" in st.session_state:
-        ai_result = st.session_state["ai_result"]
+                # Initialize MCP session if needed
+                if st.session_state.mcp_session is None:
+                    thinking.caption("Starting MCP servers...")
+                    st.session_state.mcp_session = MCPSession(MCP_SERVERS_CONFIG)
+                    asyncio.run(st.session_state.mcp_session.ensure_started())
 
-        st.markdown("### Claude's Analysis")
-        st.markdown(ai_result.get("response", "No response"))
+                thinking.caption("Thinking...")
 
-        tool_calls = ai_result.get("tool_calls", [])
-        if tool_calls:
-            with st.expander(f"MCP Tool Calls ({len(tool_calls)} calls made)"):
-                for i, tc in enumerate(tool_calls, 1):
-                    tool_name = tc.get("tool", "?")
-                    args = tc.get("args", {})
-                    preview = tc.get("result_preview", "")
-                    st.markdown(f"**{i}. {_esc(tool_name)}**")
-                    st.code(json.dumps(args, indent=2), language="json")
-                    if preview:
-                        st.caption(f"Result preview: {_esc(preview)}")
-                    st.markdown("")
+                # Create analyzer and send message
+                analyzer = ChatAnalyzer(
+                    api_key=api_key,
+                    model=model,
+                    mcp_manager=st.session_state.mcp_session.manager,
+                )
+
+                # Format patient context for first message
+                patient_context = None
+                if not st.session_state.chat_history:
+                    patient_context = format_results_for_chat(results)
+
+                # Track current tool for UI
+                current_tool = st.empty()
+
+                def on_tool_call(tool_name: str, args: dict):
+                    parts = tool_name.split("__", 1)
+                    server = parts[0].upper() if len(parts) > 1 else "?"
+                    tool = parts[1] if len(parts) > 1 else tool_name
+                    current_tool.caption(f"Calling {server}: {tool}...")
+
+                result = analyzer.send_message_sync(
+                    user_message=prompt,
+                    conversation_history=st.session_state.chat_history,
+                    system_prompt=CHAT_SYSTEM_PROMPT,
+                    patient_context=patient_context,
+                    on_tool_call=on_tool_call,
+                )
+
+                # Clear thinking indicators
+                thinking.empty()
+                current_tool.empty()
+
+                # Display response
+                st.markdown(result["response"])
+
+                # Render any HTML visualizations from tools (e.g., IMGT comparisons)
+                for html_out in result.get("html_outputs", []):
+                    st.divider()
+                    tool_name = html_out.get("tool", "visualization").replace("__", " › ")
+                    st.caption(f"📊 Visualization from {tool_name}")
+                    st.components.v1.html(
+                        html_out["html"],
+                        height=800,
+                        scrolling=True,
+                    )
+                    if html_out.get("summary"):
+                        with st.expander("Visualization Summary"):
+                            st.json(html_out["summary"])
+
+                # Show tool calls if any
+                if result["tool_calls"]:
+                    with st.expander(f"Tool calls ({len(result['tool_calls'])})"):
+                        for tc in result["tool_calls"]:
+                            st.caption(f"**{tc.get('tool', '?')}**")
+                            st.code(json.dumps(tc.get("args", {}), indent=2), language="json")
+
+                # Update state
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": result["response"],
+                    "tool_calls": result["tool_calls"],
+                    "html_outputs": result.get("html_outputs", []),
+                })
+                st.session_state.chat_history = result["updated_history"]
+
+            except Exception as e:
+                thinking.empty()
+                st.error(f"Error: {e}")
+                # Add error message to chat
+                st.session_state.chat_messages.append({
+                    "role": "assistant",
+                    "content": f"I encountered an error: {e}",
+                    "tool_calls": None,
+                })
+
+            finally:
+                st.session_state.chat_processing = False
+
+    # --- Control buttons ---
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("New Chat", use_container_width=True):
+            st.session_state.chat_messages = []
+            st.session_state.chat_history = []
+            st.rerun()
+    with col2:
+        if st.button("Stop Servers", use_container_width=True):
+            if st.session_state.mcp_session:
+                import asyncio
+                asyncio.run(st.session_state.mcp_session.shutdown())
+                st.session_state.mcp_session = None
+                st.success("Servers stopped.")
 
 
 
