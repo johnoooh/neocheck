@@ -184,7 +184,16 @@ class ChatAnalyzer:
                 "updated_history": list[dict],  # Full conversation for next turn
             }
         """
-        return asyncio.run(
+        # Get the current event loop (or create one if needed)
+        # This ensures we reuse the same loop that MCP servers are attached to
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.get_event_loop()
+
+        # Use the existing loop instead of asyncio.run() which creates a new loop
+        # nest_asyncio allows running coroutines in an already-running loop
+        return loop.run_until_complete(
             self._send_message(
                 user_message,
                 conversation_history,

@@ -6,12 +6,35 @@ Main Streamlit application.
 import json
 import sys
 import os
+import base64
 from datetime import datetime
 from typing import Any
 
 # Fix asyncio event loop issues with nested async calls (needed for MCP tool calls)
 import nest_asyncio
 nest_asyncio.apply()
+
+import asyncio
+
+def get_or_create_eventloop():
+    """Get the current event loop or create a new one if needed.
+
+    This ensures we reuse the same event loop across Streamlit reruns,
+    which is critical for MCP servers that hold async state (locks, subprocesses).
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+# Initialize the event loop early, before any async operations
+_event_loop = get_or_create_eventloop()
 
 import streamlit as st
 import pandas as pd
@@ -33,6 +56,18 @@ from utils.scoring import summarize_epitope
 def _esc(text: str) -> str:
     """Escape markdown special characters (especially * in HLA allele names)."""
     return text.replace("*", "\\*")
+
+
+def render_html_visualization(html_content: str, height: int = 600) -> None:
+    """Render HTML visualization directly in the Streamlit app using an iframe.
+
+    This approach embeds the visualization inline rather than opening a new tab,
+    which avoids browser security restrictions on data URLs.
+    """
+    import streamlit.components.v1 as components
+
+    # Render the HTML directly in an iframe component
+    components.html(html_content, height=height, scrolling=True)
 
 
 # -- Page config --
@@ -974,14 +1009,13 @@ Higher scores indicate more robust experimental support for immunogenicity.
                 st.divider()
                 tool_name = html_out.get("tool", "visualization").replace("__", " › ")
                 st.caption(f"📊 Visualization from {tool_name}")
-                st.components.v1.html(
-                    html_out["html"],
-                    height=800,
-                    scrolling=True,
-                )
                 if html_out.get("summary"):
-                    with st.expander("Visualization Summary"):
-                        st.json(html_out["summary"])
+                    summary = html_out["summary"]
+                    st.info(
+                        f"**Summary:** {summary.get('protein_differences', '?')} protein differences, "
+                        f"{summary.get('peptide_binding_differences', '?')} in peptide binding sites"
+                    )
+                render_html_visualization(html_out["html"], height=700)
 
             # Show tool calls for assistant messages
             if msg.get("tool_calls"):
@@ -1010,7 +1044,6 @@ Higher scores indicate more robust experimental support for immunogenicity.
             thinking.caption("Thinking...")
 
             try:
-                import asyncio
                 from clients.mcp_session import MCPSession
                 from clients.chat_client import ChatAnalyzer, format_results_for_chat
 
@@ -1018,7 +1051,8 @@ Higher scores indicate more robust experimental support for immunogenicity.
                 if st.session_state.mcp_session is None:
                     thinking.caption("Starting MCP servers...")
                     st.session_state.mcp_session = MCPSession(MCP_SERVERS_CONFIG)
-                    asyncio.run(st.session_state.mcp_session.ensure_started())
+                    # Use the persistent event loop instead of asyncio.run()
+                    _event_loop.run_until_complete(st.session_state.mcp_session.ensure_started())
 
                 thinking.caption("Thinking...")
 
@@ -1059,18 +1093,18 @@ Higher scores indicate more robust experimental support for immunogenicity.
                 st.markdown(result["response"])
 
                 # Render any HTML visualizations from tools (e.g., IMGT comparisons)
-                for html_out in result.get("html_outputs", []):
+                html_outputs = result.get("html_outputs", [])
+                for html_out in html_outputs:
                     st.divider()
                     tool_name = html_out.get("tool", "visualization").replace("__", " › ")
                     st.caption(f"📊 Visualization from {tool_name}")
-                    st.components.v1.html(
-                        html_out["html"],
-                        height=800,
-                        scrolling=True,
-                    )
                     if html_out.get("summary"):
-                        with st.expander("Visualization Summary"):
-                            st.json(html_out["summary"])
+                        summary = html_out["summary"]
+                        st.info(
+                            f"**Summary:** {summary.get('protein_differences', '?')} protein differences, "
+                            f"{summary.get('peptide_binding_differences', '?')} in peptide binding sites"
+                        )
+                    render_html_visualization(html_out["html"], height=700)
 
                 # Show tool calls if any
                 if result["tool_calls"]:
@@ -1111,8 +1145,8 @@ Higher scores indicate more robust experimental support for immunogenicity.
     with col2:
         if st.button("Stop Servers", use_container_width=True):
             if st.session_state.mcp_session:
-                import asyncio
-                asyncio.run(st.session_state.mcp_session.shutdown())
+                # Use the persistent event loop instead of asyncio.run()
+                _event_loop.run_until_complete(st.session_state.mcp_session.shutdown())
                 st.session_state.mcp_session = None
                 st.success("Servers stopped.")
 

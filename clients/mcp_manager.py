@@ -22,7 +22,14 @@ class MCPServer:
         self._process: asyncio.subprocess.Process | None = None
         self._request_id = 0
         self._tools: list[dict[str, Any]] = []
-        self._lock = asyncio.Lock()
+        # Defer lock creation until first use to avoid event loop binding issues
+        self._lock: asyncio.Lock | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Get or create the lock, ensuring it's bound to the current event loop."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     @property
     def is_running(self) -> bool:
@@ -41,6 +48,8 @@ class MCPServer:
         if self.env:
             env.update(self.env)
 
+        # Use a large buffer limit (1MB) to handle large JSON responses
+        # like HTML visualizations which can be 180KB+
         self._process = await asyncio.create_subprocess_exec(
             self.command, *self.args,
             stdin=asyncio.subprocess.PIPE,
@@ -48,6 +57,7 @@ class MCPServer:
             stderr=asyncio.subprocess.PIPE,
             cwd=self.cwd,
             env=env,
+            limit=1024 * 1024,  # 1MB buffer limit for stdout/stderr streams
         )
         print(f"[MCP:{self.name}] Process started (pid={self._process.pid})")
         logger.info(f"[{self.name}] Started (pid={self._process.pid})")
@@ -57,7 +67,7 @@ class MCPServer:
         if not self._process or not self._process.stdin or not self._process.stdout:
             raise RuntimeError(f"[{self.name}] Server not running")
 
-        async with self._lock:
+        async with self._get_lock():
             request = {
                 "jsonrpc": "2.0",
                 "id": self._next_id(),
@@ -83,13 +93,38 @@ class MCPServer:
                 raise
 
     async def _read_json_line(self) -> dict:
-        """Read a single JSON line from stdout."""
+        """Read a single JSON line from stdout.
+
+        Handles large responses by reading until we get a complete JSON object.
+        The default readline() has a 64KB limit which can be exceeded by
+        large tool responses like HTML visualizations.
+        """
         if not self._process or not self._process.stdout:
             raise RuntimeError(f"[{self.name}] No stdout")
 
+        buffer = b""
+
         while True:
-            line = await self._process.stdout.readline()
-            if not line:
+            # Read in chunks to handle very large responses
+            # Use readuntil with a larger limit, falling back to chunk reading
+            try:
+                # Try to read a line (newline-delimited JSON)
+                chunk = await self._process.stdout.readline()
+            except asyncio.LimitOverrunError as e:
+                # Buffer limit exceeded - read the consumed data and continue
+                # This happens with very large JSON responses (>64KB default)
+                print(f"[MCP:{self.name}] Large response detected, reading in chunks...")
+                chunk = await self._process.stdout.read(e.consumed)
+                # Continue reading until we find the newline
+                while True:
+                    try:
+                        remainder = await self._process.stdout.readline()
+                        chunk += remainder
+                        break
+                    except asyncio.LimitOverrunError as e2:
+                        chunk += await self._process.stdout.read(e2.consumed)
+
+            if not chunk:
                 # Check for stderr
                 stderr_data = b""
                 if self._process.stderr:
@@ -104,17 +139,23 @@ class MCPServer:
                     f"stderr: {stderr_data.decode(errors='replace')}"
                 )
 
-            line_str = line.decode().strip()
-            if not line_str:
-                # Empty line, skip
-                continue
+            buffer += chunk
 
-            try:
-                return json.loads(line_str)
-            except json.JSONDecodeError:
-                # Not valid JSON, might be debug output, skip
-                print(f"[MCP:{self.name}] Skipping non-JSON line: {line_str[:100]}")
-                continue
+            # Check if we have a complete line (ends with newline)
+            if buffer.endswith(b'\n'):
+                line_str = buffer.decode().strip()
+                buffer = b""
+
+                if not line_str:
+                    # Empty line, skip
+                    continue
+
+                try:
+                    return json.loads(line_str)
+                except json.JSONDecodeError:
+                    # Not valid JSON, might be debug output, skip
+                    print(f"[MCP:{self.name}] Skipping non-JSON line: {line_str[:100]}")
+                    continue
 
     async def initialize(self) -> dict:
         """Perform the MCP initialize handshake."""

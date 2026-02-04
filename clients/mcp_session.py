@@ -113,11 +113,19 @@ class MCPSession:
         if self._initialized and self.manager:
             try:
                 # Try to run cleanup in existing event loop
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                # Use get_event_loop() which won't create a new loop in Python 3.10+
+                try:
+                    loop = asyncio.get_running_loop()
+                    # If there's a running loop, schedule the shutdown
                     loop.create_task(self.shutdown())
-                else:
-                    loop.run_until_complete(self.shutdown())
+                except RuntimeError:
+                    # No running loop - try to get/create one for cleanup
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if not loop.is_closed():
+                            loop.run_until_complete(self.shutdown())
+                    except Exception:
+                        pass
             except Exception:
                 # Best effort cleanup
                 pass
