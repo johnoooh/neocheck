@@ -7,6 +7,7 @@ with conversation history and context awareness.
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Callable
 
 import anthropic
@@ -14,6 +15,138 @@ import anthropic
 from clients.mcp_manager import MCPManager
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Input Validation and Security
+# ============================================================
+
+# Patterns that indicate prompt injection attempts
+INJECTION_PATTERNS = [
+    r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)",
+    r"disregard\s+(all\s+)?(previous|prior|above)",
+    r"forget\s+(all\s+)?(your|the)\s+(instructions?|rules?|guidelines?)",
+    r"you\s+are\s+now\s+",
+    r"act\s+as\s+(if\s+you\s+are\s+|a\s+)?",
+    r"pretend\s+(to\s+be|you\s+are)",
+    r"roleplay\s+as",
+    r"new\s+(system\s+)?instructions?:",
+    r"system\s*:\s*",
+    r"\[system\]",
+    r"<system>",
+    r"override\s+(all\s+)?(security|safety|rules?)",
+    r"bypass\s+(all\s+)?(restrictions?|filters?|rules?)",
+    r"jailbreak",
+    r"do\s+anything\s+now",
+    r"dan\s+mode",
+    r"developer\s+mode",
+    r"reveal\s+(your\s+)?(system\s+)?prompt",
+    r"show\s+(me\s+)?(your\s+)?(system\s+)?prompt",
+    r"what\s+(are\s+)?(your\s+)?(system\s+)?instructions",
+    r"print\s+(your\s+)?(system\s+)?prompt",
+]
+
+# Compile patterns for efficiency
+INJECTION_REGEX = re.compile(
+    "|".join(INJECTION_PATTERNS),
+    re.IGNORECASE
+)
+
+# Keywords related to allowed topics (cancer immunotherapy)
+ALLOWED_TOPIC_KEYWORDS = [
+    # Mutations and genes
+    "mutation", "kras", "braf", "tp53", "egfr", "pik3ca", "nras", "gene",
+    "g12d", "g12v", "g12c", "v600e", "r175h", "l858r",
+    # HLA
+    "hla", "allele", "mhc", "major histocompatibility",
+    # Immunology
+    "epitope", "neoantigen", "antigen", "t-cell", "t cell", "tcr", "immunotherapy",
+    "immunogenic", "peptide", "binding", "presentation",
+    # Cancer
+    "cancer", "tumor", "tumour", "oncology", "carcinoma", "melanoma", "lung",
+    "pancreatic", "colorectal", "breast", "leukemia", "lymphoma",
+    # Clinical
+    "clinical trial", "nct", "vaccine", "treatment", "therapy", "patient",
+    # Databases
+    "cedar", "imgt", "pubmed", "clinicaltrials",
+    # Analysis
+    "compare", "analysis", "score", "assay", "sequence", "protein",
+    # General research
+    "research", "study", "publication", "literature",
+]
+
+# Off-topic indicators (things we should NOT help with)
+OFFTOPIC_INDICATORS = [
+    # Programming (except bioinformatics discussion)
+    r"write\s+(me\s+)?(a\s+)?(python|javascript|code|script|program)",
+    r"code\s+(for|to)\s+",
+    r"create\s+(a\s+)?(website|app|application|game)",
+    # Unrelated topics
+    r"recipe\s+for",
+    r"how\s+to\s+cook",
+    r"write\s+(a\s+)?(poem|story|essay|song)",
+    r"tell\s+me\s+a\s+joke",
+    r"what\s+is\s+the\s+capital\s+of",
+    r"translate\s+.+\s+to\s+",
+    r"(crypto|bitcoin|stock|invest)",
+    r"(dating|relationship)\s+advice",
+]
+
+OFFTOPIC_REGEX = re.compile(
+    "|".join(OFFTOPIC_INDICATORS),
+    re.IGNORECASE
+)
+
+
+class InputValidationError(Exception):
+    """Raised when user input fails validation."""
+    pass
+
+
+def validate_user_input(message: str) -> tuple[bool, str | None]:
+    """
+    Validate user input for security and topic relevance.
+
+    Returns:
+        Tuple of (is_valid, error_message).
+        If is_valid is True, error_message is None.
+        If is_valid is False, error_message contains the reason.
+    """
+    # Check for empty or too long messages
+    if not message or not message.strip():
+        return False, "Please enter a message."
+
+    if len(message) > 10000:
+        return False, "Message is too long. Please keep messages under 10,000 characters."
+
+    # Check for prompt injection attempts
+    if INJECTION_REGEX.search(message):
+        logger.warning(f"Potential prompt injection detected: {message[:100]}...")
+        return False, None  # Return None to use the standard off-topic response
+
+    # Check for clearly off-topic requests
+    if OFFTOPIC_REGEX.search(message):
+        # But allow if there are also on-topic keywords (might be legitimate context)
+        message_lower = message.lower()
+        has_topic_keyword = any(kw in message_lower for kw in ALLOWED_TOPIC_KEYWORDS)
+        if not has_topic_keyword:
+            return False, None  # Use standard off-topic response
+
+    return True, None
+
+
+def get_offtopic_response() -> str:
+    """Return the standard response for off-topic or injection attempts."""
+    return (
+        "I'm specifically designed to assist with **neoantigen analysis and cancer immunotherapy research**. "
+        "I can help you with:\n\n"
+        "- **Epitope analysis** — T-cell assays, TCR sequences, MHC binding\n"
+        "- **HLA allele information** — validation, comparison, sequences\n"
+        "- **Cancer mutations** — KRAS, BRAF, TP53, EGFR, and others\n"
+        "- **Clinical trials** — immunotherapy and neoantigen vaccine trials\n"
+        "- **Literature search** — PubMed for relevant publications\n\n"
+        "How can I assist you with your patient's case or research question?"
+    )
 
 
 def format_results_for_chat(results: dict[str, Any]) -> str:
@@ -184,6 +317,22 @@ class ChatAnalyzer:
                 "updated_history": list[dict],  # Full conversation for next turn
             }
         """
+        # Validate user input for security and topic relevance
+        is_valid, error_msg = validate_user_input(user_message)
+        if not is_valid:
+            # Return an off-topic/security response without calling the LLM
+            offtopic_response = error_msg if error_msg else get_offtopic_response()
+            # Add to history so context is preserved
+            updated_history = list(conversation_history)
+            updated_history.append({"role": "user", "content": user_message})
+            updated_history.append({"role": "assistant", "content": [{"type": "text", "text": offtopic_response}]})
+            return {
+                "response": offtopic_response,
+                "tool_calls": [],
+                "updated_history": updated_history,
+                "html_outputs": [],
+            }
+
         # Get the current event loop (or create one if needed)
         # This ensures we reuse the same loop that MCP servers are attached to
         try:

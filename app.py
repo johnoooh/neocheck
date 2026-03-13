@@ -49,7 +49,7 @@ from utils.validators import (
     normalize_hla_allele,
     normalize_hla_allele_full,
 )
-from utils.formatters import results_to_json, results_to_csv, generate_html_report
+from utils.formatters import results_to_json, results_to_csv, generate_html_report, generate_chat_report
 from utils.scoring import summarize_epitope
 
 
@@ -1143,12 +1143,23 @@ Higher scores indicate more robust experimental support for immunogenicity.
             st.session_state.chat_history = []
             st.rerun()
     with col2:
-        if st.button("Stop Servers", use_container_width=True):
-            if st.session_state.mcp_session:
-                # Use the persistent event loop instead of asyncio.run()
-                _event_loop.run_until_complete(st.session_state.mcp_session.shutdown())
-                st.session_state.mcp_session = None
-                st.success("Servers stopped.")
+        # Download chat report button
+        if st.session_state.chat_messages:
+            chat_report = generate_chat_report(
+                chat_messages=st.session_state.chat_messages,
+                patient_context=results,
+            )
+            mutation_str = results.get("mutation", "unknown")
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            st.download_button(
+                "Download Chat Report",
+                data=chat_report,
+                file_name=f"neocheck_chat_{mutation_str}_{ts}.html",
+                mime="text/html",
+                use_container_width=True,
+            )
+        else:
+            st.button("Download Chat Report", disabled=True, use_container_width=True)
 
 
 
