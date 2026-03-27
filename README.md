@@ -93,6 +93,8 @@ neocheck/
 
 5. **Export** — Download results as JSON, CSV, or a standalone HTML report.
 
+6. **AI Analysis** (optional) — Scroll to the AI section, enter your Anthropic API key, and click "Run AI Analysis". Claude will use MCP tools to investigate your results in depth and provide a clinical interpretation.
+
 ### Quick Examples
 
 The app includes pre-configured example buttons:
@@ -113,16 +115,70 @@ The app includes pre-configured example buttons:
 - Advanced options (cancer type filter, neoantigen-only toggle, result limits)
 - Export to JSON, CSV, and standalone HTML report
 - Aggressive caching to minimize redundant API calls
+- **AI-powered analysis** via Claude with MCP tool access to all 4 databases
 - Research disclaimer
+
+## AI Analysis Setup
+
+The AI tab uses the Anthropic Messages API to send your results to Claude, which can then call MCP tools to investigate further. This requires:
+
+### 1. Anthropic API Key
+
+Get an API key from [console.anthropic.com](https://console.anthropic.com):
+1. Create an account (or sign in)
+2. Go to **API Keys** and create a new key
+3. Add billing — the API is pay-per-token
+
+> **Important:** A Claude Max/Pro subscription (claude.ai) does **not** include API access. The API is a separate product with separate billing.
+
+You can provide the key in two ways:
+- **Environment variable** (recommended): `export ANTHROPIC_API_KEY=sk-ant-...`
+- **UI input**: Enter it directly in the AI Analysis section (stored in session only, never persisted)
+
+### 2. Build the MCP Servers
+
+The AI tab launches 4 MCP servers as subprocesses. They must be built first:
+
+```bash
+# From the NeoCheck project root (parent of neocheck/)
+
+# CEDAR (Node.js)
+cd CEDARMCP && npm install && npm run build && cd ..
+
+# IMGT/HLA (Node.js)
+cd imgt-hla-mcp && npm install && npm run build && cd ..
+
+# ClinicalTrials.gov (requires bun — install from bun.sh)
+cd clinicaltrialsgov-mcp-server && bun install && bun run build && cd ..
+
+# PubMed (Python)
+cd pubmedmcp && pip install -e . && cd ..
+```
+
+**Prerequisites:**
+- Node.js 20+ (`node --version`)
+- Bun (`bun --version`) — install from [bun.sh](https://bun.sh)
+- Python 3.12+
+
+### 3. Run
+
+```bash
+# Optional: set API key as env var
+export ANTHROPIC_API_KEY=sk-ant-...
+
+cd neocheck
+streamlit run app.py
+```
+
+Run a standard analysis first, then scroll down to the AI section and click "Run AI Analysis".
 
 ## Coming Soon
 
-- **Claude AI integration** — Intelligent interpretation of results using the Anthropic API, with natural-language summaries and clinical context
-- **MCP server integration** — Connect to CEDAR, IMGT/HLA, ClinicalTrials.gov, and PubMed via Model Context Protocol for AI-orchestrated queries
 - **Docker containerization** — One-command deployment with Docker
 - **HLA Class II support** — DRB1, DQB1, and other Class II loci
 - **Batch analysis** — Analyze multiple mutations in a single run
 - **Interactive visualizations** — Plotly charts for epitope comparisons and evidence landscapes
+- **Streaming AI responses** — Real-time display as Claude generates its analysis
 
 ## Deployment
 
@@ -184,6 +240,7 @@ Point your reverse proxy to `http://localhost:8501` and configure WebSocket supp
 | `pandas` >= 2.0.0 | Data manipulation and table display |
 | `plotly` >= 5.18.0 | Interactive visualizations (used in future features) |
 | `requests` >= 2.31.0 | HTTP client for all API calls |
+| `anthropic` >= 0.40.0 | Claude AI API client (for AI Analysis tab) |
 
 ## Disclaimer
 

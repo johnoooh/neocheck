@@ -138,6 +138,7 @@ def _summarize_tcell(assay: dict[str, Any]) -> dict[str, Any]:
         "tcell_id": assay.get("tcell_id"),
         "sequence": assay.get("linear_sequence"),
         "assay_type": assay.get("assay_names"),
+        "assay_description": assay.get("assay_description"),
         "qualitative_measure": assay.get("qualitative_measure"),
         "mhc_allele": assay.get("mhc_allele_name"),
         "mhc_class": assay.get("mhc_class"),
