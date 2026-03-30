@@ -1,12 +1,18 @@
 """Export and formatting utilities for NeoCheck results."""
 
 import csv
+import html as html_mod
 import io
 import json
 from datetime import datetime
 from typing import Any
 
 from utils.scoring import summarize_epitope
+
+
+def _h(value: Any) -> str:
+    """Escape a value for safe HTML interpolation."""
+    return html_mod.escape(str(value)) if value else ""
 
 
 def results_to_json(results: dict[str, Any]) -> str:
@@ -65,49 +71,52 @@ def generate_html_report(results: dict[str, Any]) -> str:
     epitope_rows = ""
     for i, ep in enumerate(epitopes[:20], 1):
         match_badge = '<span style="color:#2ca02c;font-weight:bold">HLA Match</span>' if ep.get("hla_matched") else ""
-        summary = summarize_epitope(ep)
+        summary = _h(summarize_epitope(ep))
+        alleles_str = _h('; '.join(ep.get('mhc_alleles') or ['N/A']))
         epitope_rows += f"""
         <tr>
             <td>{i}</td>
-            <td><code>{ep.get('linear_sequence', 'N/A')}</code></td>
-            <td>{ep.get('mutation', '')}</td>
+            <td><code>{_h(ep.get('linear_sequence', 'N/A'))}</code></td>
+            <td>{_h(ep.get('mutation', ''))}</td>
             <td>{summary}</td>
-            <td>{'; '.join(ep.get('mhc_alleles') or ['N/A'])}</td>
+            <td>{alleles_str}</td>
             <td>{ep.get('tcell_assay_count', 0)}</td>
             <td>{ep.get('tcr_count', 0)}</td>
             <td>{match_badge}</td>
-            <td><a href="{ep.get('cedar_url', '#')}">CEDAR</a></td>
+            <td><a href="{_h(ep.get('cedar_url', '#'))}">CEDAR</a></td>
         </tr>"""
 
     # Build trial rows
     trial_rows = ""
     for t in trials:
+        nct_id = _h(t.get('nct_id', ''))
         trial_rows += f"""
         <tr>
-            <td><a href="https://clinicaltrials.gov/study/{t.get('nct_id', '')}">{t.get('nct_id', '')}</a></td>
-            <td>{t.get('title', '')}</td>
-            <td>{t.get('status', '')}</td>
-            <td>{t.get('phase', '')}</td>
-            <td>{t.get('conditions', '')}</td>
+            <td><a href="https://clinicaltrials.gov/study/{nct_id}">{nct_id}</a></td>
+            <td>{_h(t.get('title', ''))}</td>
+            <td>{_h(t.get('status', ''))}</td>
+            <td>{_h(t.get('phase', ''))}</td>
+            <td>{_h(t.get('conditions', ''))}</td>
         </tr>"""
 
     # Build publication rows
     pub_rows = ""
     for p in publications:
+        pmid = _h(p.get('pmid', ''))
         pub_rows += f"""
         <tr>
-            <td><a href="https://pubmed.ncbi.nlm.nih.gov/{p.get('pmid', '')}">{p.get('pmid', '')}</a></td>
-            <td>{p.get('title', '')}</td>
-            <td>{p.get('authors', '')}</td>
-            <td>{p.get('journal', '')}</td>
-            <td>{p.get('year', '')}</td>
+            <td><a href="https://pubmed.ncbi.nlm.nih.gov/{pmid}">{pmid}</a></td>
+            <td>{_h(p.get('title', ''))}</td>
+            <td>{_h(p.get('authors', ''))}</td>
+            <td>{_h(p.get('journal', ''))}</td>
+            <td>{_h(p.get('year', ''))}</td>
         </tr>"""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>NeoCheck Report - {gene} {mutation}</title>
+<title>NeoCheck Report - {_h(gene)} {_h(mutation)}</title>
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Inter', 'Helvetica Neue', sans-serif; margin: 2rem auto; max-width: 1200px; color: #1d1d1f; line-height: 1.6; }}
 h1 {{ color: #1d1d1f; font-weight: 600; letter-spacing: -0.02em; }}
@@ -129,7 +138,7 @@ a:hover {{ text-decoration: underline; }}
 <body>
 <h1>NeoCheck Report</h1>
 <p>Generated: {timestamp}</p>
-<p><strong>Query:</strong> {gene} {mutation} | HLA: {', '.join(a for a in hla_alleles if a)}</p>
+<p><strong>Query:</strong> {_h(gene)} {_h(mutation)} | HLA: {', '.join(_h(a) for a in hla_alleles if a)}</p>
 
 <div class="disclaimer">
 <strong>Disclaimer:</strong> This report is for research purposes only and should not be used for clinical decision-making without professional medical review.
