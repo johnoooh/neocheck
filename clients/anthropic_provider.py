@@ -54,7 +54,7 @@ class AnthropicProvider:
                 )
 
         return ChatResponse(
-            text="".join(text_parts),
+            text="\n".join(text_parts),
             tool_calls=tool_calls,
             stop_reason=resp.stop_reason,
             raw=resp,

@@ -393,7 +393,7 @@ class ChatAnalyzer:
 
             # Check if Claude is done
             if resp.stop_reason == "end_turn":
-                final_text = resp.text
+                final_text = resp.text or "(No text response)"
                 # Add assistant response to history
                 assistant_content = []
                 if resp.text:
@@ -416,7 +416,7 @@ class ChatAnalyzer:
             # Process tool calls
             if not resp.tool_calls:
                 # No tool calls — return what we have
-                final_text = resp.text
+                final_text = resp.text or "(No text response)"
                 assistant_content = []
                 if resp.text:
                     assistant_content.append({"type": "text", "text": resp.text})
@@ -498,7 +498,7 @@ class ChatAnalyzer:
             max_tokens=4096,
         )
 
-        final_text = resp.text
+        final_text = resp.text or "(No text response)"
         assistant_content = []
         if resp.text:
             assistant_content.append({"type": "text", "text": resp.text})
