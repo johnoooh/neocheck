@@ -58,6 +58,9 @@ from utils.feedback import FeedbackEntry, submit_feedback
 from utils.scoring import summarize_epitope
 from utils.rate_limit import RateLimiter
 
+# Module-level rate limiter singleton (process-wide, not per-session)
+_RATE_LIMITER = RateLimiter()
+
 
 def _esc(text: str) -> str:
     """Escape markdown special characters (especially * in HLA allele names)."""
@@ -1025,8 +1028,6 @@ Higher scores indicate more robust experimental support for immunogenicity.
         st.session_state.mcp_session = None
     if "chat_processing" not in st.session_state:
         st.session_state.chat_processing = False
-    if "rate_limiter" not in st.session_state:
-        st.session_state["rate_limiter"] = RateLimiter()
 
     # --- Context banner ---
     st.caption(
@@ -1109,7 +1110,7 @@ Higher scores indicate more robust experimental support for immunogenicity.
 
                 # Rate-limit check before dispatching to the LLM
                 ip = _get_client_ip()
-                if not st.session_state["rate_limiter"].check(ip):
+                if not _RATE_LIMITER.check(ip):
                     thinking.empty()
                     st.warning("Rate limit reached. Try again in an hour.")
                     st.session_state.chat_processing = False
