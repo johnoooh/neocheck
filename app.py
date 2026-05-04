@@ -1045,7 +1045,7 @@ Higher scores indicate more robust experimental support for immunogenicity.
 
             try:
                 from clients.mcp_session import MCPSession
-                from clients.chat_client import ChatAnalyzer, format_results_for_chat
+                from clients.chat_client import format_results_for_chat, make_anthropic_chat_analyzer
 
                 # Initialize MCP session if needed
                 if st.session_state.mcp_session is None:
@@ -1057,7 +1057,7 @@ Higher scores indicate more robust experimental support for immunogenicity.
                 thinking.caption("Thinking...")
 
                 # Create analyzer and send message
-                analyzer = ChatAnalyzer(
+                analyzer = make_anthropic_chat_analyzer(
                     api_key=api_key,
                     model=model,
                     mcp_manager=st.session_state.mcp_session.manager,

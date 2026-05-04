@@ -12,6 +12,8 @@ from typing import Any, Callable
 
 import anthropic
 
+from clients.llm_provider import ChatResponse, LLMProvider, ToolCallRequest
+from clients.anthropic_provider import AnthropicProvider
 from clients.mcp_manager import MCPManager
 
 logger = logging.getLogger(__name__)
@@ -274,20 +276,16 @@ class ChatAnalyzer:
 
     def __init__(
         self,
-        api_key: str,
-        model: str,
+        provider: LLMProvider,
         mcp_manager: MCPManager,
     ):
-        """
-        Initialize chat analyzer.
+        """Initialize chat analyzer.
 
         Args:
-            api_key: Anthropic API key
-            model: Claude model name
+            provider: An LLMProvider implementation (Anthropic, local, etc.)
             mcp_manager: Initialized MCPManager with running servers
         """
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.model = model
+        self.provider = provider
         self.mcp_manager = mcp_manager
 
     def send_message_sync(
@@ -386,22 +384,28 @@ class ChatAnalyzer:
 
         # Tool-use loop
         for round_num in range(max_tool_rounds):
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                system=system_prompt,
-                tools=tools,
+            resp: ChatResponse = self.provider.chat(
                 messages=messages,
+                tools=tools,
+                system=system_prompt,
+                max_tokens=4096,
             )
 
             # Check if Claude is done
-            if response.stop_reason == "end_turn":
-                final_text = _extract_text(response)
+            if resp.stop_reason == "end_turn":
+                final_text = resp.text
                 # Add assistant response to history
-                messages.append({
-                    "role": "assistant",
-                    "content": _serialize_content(response.content),
-                })
+                assistant_content = []
+                if resp.text:
+                    assistant_content.append({"type": "text", "text": resp.text})
+                for tc in resp.tool_calls:
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments,
+                    })
+                messages.append({"role": "assistant", "content": assistant_content})
                 return {
                     "response": final_text,
                     "tool_calls": tool_log,
@@ -410,15 +414,13 @@ class ChatAnalyzer:
                 }
 
             # Process tool calls
-            tool_use_blocks = [b for b in response.content if b.type == "tool_use"]
-
-            if not tool_use_blocks:
+            if not resp.tool_calls:
                 # No tool calls — return what we have
-                final_text = _extract_text(response)
-                messages.append({
-                    "role": "assistant",
-                    "content": _serialize_content(response.content),
-                })
+                final_text = resp.text
+                assistant_content = []
+                if resp.text:
+                    assistant_content.append({"type": "text", "text": resp.text})
+                messages.append({"role": "assistant", "content": assistant_content})
                 return {
                     "response": final_text,
                     "tool_calls": tool_log,
@@ -428,51 +430,57 @@ class ChatAnalyzer:
 
             # Execute each tool call
             tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    # Notify callback
-                    if on_tool_call:
-                        on_tool_call(block.name, block.input)
+            for tc in resp.tool_calls:
+                # Notify callback
+                if on_tool_call:
+                    on_tool_call(tc.name, tc.arguments)
 
-                    # Execute tool
-                    content_blocks = await self.mcp_manager.call_tool(block.name, block.input)
+                # Execute tool
+                content_blocks = await self.mcp_manager.call_tool(tc.name, tc.arguments)
 
-                    # Log the tool call and check for HTML visualizations
-                    result_text = ""
-                    for cb in content_blocks:
-                        if isinstance(cb, dict) and cb.get("type") == "text":
-                            text_content = cb.get("text", "")
-                            result_text += text_content[:500]
+                # Log the tool call and check for HTML visualizations
+                result_text = ""
+                for cb in content_blocks:
+                    if isinstance(cb, dict) and cb.get("type") == "text":
+                        text_content = cb.get("text", "")
+                        result_text += text_content[:500]
 
-                            # Check for HTML visualization output (e.g., from imgt__visualize_comparison)
-                            try:
-                                parsed = json.loads(text_content)
-                                if isinstance(parsed, dict) and parsed.get("html"):
-                                    html_outputs.append({
-                                        "tool": block.name,
-                                        "html": parsed["html"],
-                                        "summary": parsed.get("summary"),
-                                    })
-                            except (json.JSONDecodeError, TypeError):
-                                pass
+                        # Check for HTML visualization output (e.g., from imgt__visualize_comparison)
+                        try:
+                            parsed = json.loads(text_content)
+                            if isinstance(parsed, dict) and parsed.get("html"):
+                                html_outputs.append({
+                                    "tool": tc.name,
+                                    "html": parsed["html"],
+                                    "summary": parsed.get("summary"),
+                                })
+                        except (json.JSONDecodeError, TypeError):
+                            pass
 
-                    tool_log.append({
-                        "tool": block.name,
-                        "args": block.input,
-                        "result_preview": result_text[:300] + ("..." if len(result_text) > 300 else ""),
-                    })
+                tool_log.append({
+                    "tool": tc.name,
+                    "args": tc.arguments,
+                    "result_preview": result_text[:300] + ("..." if len(result_text) > 300 else ""),
+                })
 
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": content_blocks,
-                    })
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": content_blocks,
+                })
 
             # Append to conversation
-            messages.append({
-                "role": "assistant",
-                "content": _serialize_content(response.content),
-            })
+            assistant_content = []
+            if resp.text:
+                assistant_content.append({"type": "text", "text": resp.text})
+            for tc in resp.tool_calls:
+                assistant_content.append({
+                    "type": "tool_use",
+                    "id": tc.id,
+                    "name": tc.name,
+                    "input": tc.arguments,
+                })
+            messages.append({"role": "assistant", "content": assistant_content})
             messages.append({
                 "role": "user",
                 "content": tool_results,
@@ -484,18 +492,24 @@ class ChatAnalyzer:
             "content": "Please provide your response now based on everything gathered.",
         })
 
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=4096,
-            system=system_prompt,
+        resp = self.provider.chat(
             messages=messages,
+            system=system_prompt,
+            max_tokens=4096,
         )
 
-        final_text = _extract_text(response)
-        messages.append({
-            "role": "assistant",
-            "content": _serialize_content(response.content),
-        })
+        final_text = resp.text
+        assistant_content = []
+        if resp.text:
+            assistant_content.append({"type": "text", "text": resp.text})
+        for tc in resp.tool_calls:
+            assistant_content.append({
+                "type": "tool_use",
+                "id": tc.id,
+                "name": tc.name,
+                "input": tc.arguments,
+            })
+        messages.append({"role": "assistant", "content": assistant_content})
 
         return {
             "response": final_text,
@@ -544,3 +558,13 @@ def parse_tool_name(prefixed_name: str) -> tuple[str, str]:
         parts = prefixed_name.split("__", 1)
         return parts[0], parts[1]
     return "unknown", prefixed_name
+
+
+def make_anthropic_chat_analyzer(
+    api_key: str,
+    model: str,
+    mcp_manager: MCPManager,
+) -> "ChatAnalyzer":
+    """Convenience factory mirroring the pre-refactor constructor."""
+    provider = AnthropicProvider(api_key=api_key, model=model)
+    return ChatAnalyzer(provider=provider, mcp_manager=mcp_manager)
