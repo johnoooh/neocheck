@@ -18,6 +18,8 @@ _TOOL_CALL_RE = re.compile(
     re.DOTALL,
 )
 
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
 
 def anthropic_messages_to_qwen(
     messages: list[dict[str, Any]],
@@ -79,6 +81,7 @@ def parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCallRequest]]:
     Returns (text_without_calls, calls). Malformed JSON is silently ignored
     (the chunk is left in the text); we never raise from this helper.
     """
+    raw = _THINK_RE.sub("", raw)
     calls: list[ToolCallRequest] = []
     pieces: list[str] = []
     last_end = 0
@@ -122,13 +125,29 @@ def parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCallRequest]]:
 
 _TOKENIZER = None
 _MODEL = None
+_LOADED_MODEL_ID: str | None = None
 
 
 def _load(model_id: str) -> None:
-    """Lazy-load tokenizer and model into module globals."""
-    global _TOKENIZER, _MODEL
-    if _MODEL is not None:
+    """Lazy-load tokenizer and model into module globals.
+
+    Reloads when called with a different model_id than the currently cached one.
+    The previous model is dropped before loading the new one to avoid VRAM doubling.
+    """
+    global _TOKENIZER, _MODEL, _LOADED_MODEL_ID
+    if _MODEL is not None and _LOADED_MODEL_ID == model_id:
         return
+    if _MODEL is not None:
+        # Different model requested — drop old to free VRAM before loading new
+        _MODEL = None
+        _TOKENIZER = None
+        _LOADED_MODEL_ID = None
+        try:
+            import torch  # noqa: WPS433
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: WPS433
 
     _TOKENIZER = AutoTokenizer.from_pretrained(model_id)
@@ -137,6 +156,7 @@ def _load(model_id: str) -> None:
         torch_dtype="auto",
         device_map="auto",
     )
+    _LOADED_MODEL_ID = model_id
 
 
 def generate_qwen(
@@ -147,16 +167,22 @@ def generate_qwen(
 ) -> str:
     """Run one generation and return the raw decoded string."""
     _load(model_id)
-    template_kwargs: dict[str, Any] = {"add_generation_prompt": True, "tokenize": False}
+    template_kwargs: dict[str, Any] = {
+        "add_generation_prompt": True,
+        "tokenize": False,
+        "enable_thinking": False,
+    }
     if tools:
         template_kwargs["tools"] = tools
     prompt = _TOKENIZER.apply_chat_template(messages, **template_kwargs)
     inputs = _TOKENIZER(prompt, return_tensors="pt").to(_MODEL.device)
 
+    pad_token_id = _TOKENIZER.pad_token_id or _TOKENIZER.eos_token_id
     out = _MODEL.generate(
         **inputs,
         max_new_tokens=max_new_tokens,
         do_sample=False,
+        pad_token_id=pad_token_id,
     )
     new_tokens = out[0][inputs["input_ids"].shape[1] :]
     return _TOKENIZER.decode(new_tokens, skip_special_tokens=True)

@@ -80,7 +80,7 @@ class LLMProvider(Protocol):
 Two concrete implementations:
 
 - `AnthropicProvider` — wraps existing Anthropic SDK call, used when user supplies a key.
-- `LocalProvider` — loads Qwen3-14B-Instruct via `transformers`, exposed through a `@spaces.GPU(duration=60)` function. Uses Qwen's native tool-call format and translates to Anthropic's tool schema for the chat loop. (vLLM is not used: ZeroGPU's ephemeral GPU attachment model conflicts with vLLM's persistent server requirement.)
+- `LocalProvider` — loads Qwen3-14B via `transformers`, exposed through a `@spaces.GPU(duration=60)` function. Uses Qwen's native tool-call format and translates to Anthropic's tool schema for the chat loop. (vLLM is not used: ZeroGPU's ephemeral GPU attachment model conflicts with vLLM's persistent server requirement.)
 
 `chat_client.py` is updated to take a `provider: LLMProvider` argument instead of constructing an Anthropic client itself. The agentic loop (current tool-call orchestration) stays put; only the call site changes.
 
@@ -90,7 +90,7 @@ Two concrete implementations:
 import spaces
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-_MODEL_ID = "Qwen/Qwen3-14B-Instruct"
+_MODEL_ID = "Qwen/Qwen3-14B"
 _tokenizer = None
 _model = None
 

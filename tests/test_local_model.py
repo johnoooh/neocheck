@@ -93,6 +93,13 @@ def test_parse_qwen_tool_calls_string_encoded_arguments():
     assert calls[0].arguments == {"q": "BRAF"}
 
 
+def test_parse_qwen_tool_calls_strips_thinking_blocks():
+    raw = "<think>Let me consider...</think>The answer is 42."
+    text, calls = parse_qwen_tool_calls(raw)
+    assert text == "The answer is 42."
+    assert calls == []
+
+
 def test_local_model_imports_without_torch_or_transformers(monkeypatch):
     """The pure-helper module must be importable without ML deps loaded."""
     import importlib

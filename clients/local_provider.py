@@ -30,7 +30,7 @@ class LocalProvider:
 
     supports_tools = True
 
-    def __init__(self, model_id: str = "Qwen/Qwen3-14B-Instruct"):
+    def __init__(self, model_id: str = "Qwen/Qwen3-14B"):
         self.model_id = model_id
         self.name = f"local:{model_id}"
 
@@ -41,10 +41,19 @@ class LocalProvider:
         system: str | None = None,
         max_tokens: int = 768,  # cap to stay well inside ZeroGPU 60s window
     ) -> ChatResponse:
+        max_tokens = min(max_tokens, 768)
         qwen_messages = anthropic_messages_to_qwen(messages, system=system)
         qwen_tools = anthropic_tools_to_qwen(tools) if tools else None
 
-        raw = _generate_on_gpu(self.model_id, qwen_messages, qwen_tools, max_tokens)
+        try:
+            raw = _generate_on_gpu(self.model_id, qwen_messages, qwen_tools, max_tokens)
+        except Exception as exc:  # noqa: BLE001 — surface ANY backend failure as graceful error
+            return ChatResponse(
+                text=f"Local model error: {exc}",
+                tool_calls=[],
+                stop_reason="error",
+                raw=exc,
+            )
         text, calls = parse_qwen_tool_calls(raw)
         stop_reason = "tool_use" if calls else "end_turn"
 

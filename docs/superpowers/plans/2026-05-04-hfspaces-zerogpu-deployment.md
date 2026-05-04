@@ -32,7 +32,7 @@
 **Modified files:**
 - `clients/chat_client.py` — accept `provider: LLMProvider` constructor arg; remove direct `anthropic.Anthropic` construction
 - `app.py` — model selector sidebar, BYO key input, feedback expander, provider construction wiring
-- `config.py` — add `DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-14B-Instruct"`, remove hardcoded `claude-haiku-4-5` default
+- `config.py` — add `DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-14B"`, remove hardcoded `claude-haiku-4-5` default
 - `requirements.txt` — add `transformers`, `accelerate`, `torch`, `huggingface_hub`, `datasets`, `spaces`
 - `README.md` — prepend HF Spaces YAML frontmatter
 
@@ -736,7 +736,7 @@ class LocalProvider:
 
     supports_tools = True
 
-    def __init__(self, model_id: str = "Qwen/Qwen3-14B-Instruct"):
+    def __init__(self, model_id: str = "Qwen/Qwen3-14B"):
         self.model_id = model_id
         self.name = f"local:{model_id}"
 
@@ -765,7 +765,7 @@ class LocalProvider:
 - [ ] **Step 4: Smoke-import to catch obvious errors**
 
 Run: `python -c "from clients.local_provider import LocalProvider; p = LocalProvider(); print(p.name, p.supports_tools)"`
-Expected: prints `local:Qwen/Qwen3-14B-Instruct True`. (Model is NOT loaded at construction — that happens on first `chat()` call inside the GPU boundary.)
+Expected: prints `local:Qwen/Qwen3-14B True`. (Model is NOT loaded at construction — that happens on first `chat()` call inside the GPU boundary.)
 
 If `spaces` isn't installed locally, the import will fail with a clear error. That's fine — we'll exercise the full path on the Space.
 
@@ -789,10 +789,10 @@ git commit -m "feat: LocalProvider with ZeroGPU + Qwen3 generation"
 Add to `config.py`:
 ```python
 # Default open-weight model used when no Anthropic key is provided.
-DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-14B-Instruct"
+DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-14B"
 
 # Fallback when ZeroGPU quota is exhausted — smaller, less capable.
-FALLBACK_LOCAL_MODEL_ID = "Qwen/Qwen3-4B-Instruct"
+FALLBACK_LOCAL_MODEL_ID = "Qwen/Qwen3-4B"
 
 # Default Anthropic model when user supplies their own key.
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
@@ -914,7 +914,7 @@ def make_entry():
         rating="up",
         comment="great",
         email=None,
-        model="local:Qwen/Qwen3-14B-Instruct",
+        model="local:Qwen/Qwen3-14B",
         mutation="BRAF V600E",
         hla=["HLA-A*02:01"],
         last_user_msg="explain this",
@@ -1204,7 +1204,7 @@ RUN cd mcp/CEDARMCP && npm ci && npm run build \
 # Pre-warm HF model cache so first request is faster (optional; ~28 GB).
 # Comment out if Space build time becomes a problem; ZeroGPU caches across runs.
 # RUN python -c "from huggingface_hub import snapshot_download; \
-#     snapshot_download('Qwen/Qwen3-14B-Instruct')"
+#     snapshot_download('Qwen/Qwen3-14B')"
 
 ENV PYTHONPATH=/app \
     STREAMLIT_SERVER_PORT=7860 \
@@ -1448,7 +1448,7 @@ Manually verify:
 
 If Qwen3-14B times out at 60s for normal queries:
 - Toggle "Use smaller fallback model (Qwen3-4B)" in the sidebar — verify it works
-- Decide whether to flip the default in `config.py` (`DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-4B-Instruct"`)
+- Decide whether to flip the default in `config.py` (`DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-4B"`)
 
 Document the decision in the Space's README.
 
