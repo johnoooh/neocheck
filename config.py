@@ -82,6 +82,15 @@ SCORING_WEIGHTS = {
 
 AI_MODEL = "claude-sonnet-4-20250514"  # or "claude-3-5-sonnet-20241022" if 404 error
 
+# Default open-weight model used when no Anthropic key is provided.
+DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-14B"
+
+# Fallback when ZeroGPU quota is exhausted — smaller, less capable.
+FALLBACK_LOCAL_MODEL_ID = "Qwen/Qwen3-4B"
+
+# Default Anthropic model when user supplies their own key.
+DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
+
 # Path to MCP server directories (relative to this file's directory, i.e. neocheck/)
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_BASE_DIR)  # NeoCheck/

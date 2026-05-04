@@ -43,6 +43,10 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import GENE_MUTATIONS, EXAMPLES, CANCER_TYPES, AI_MODEL, CHAT_SYSTEM_PROMPT, MCP_SERVERS_CONFIG
+from config import DEFAULT_ANTHROPIC_MODEL, DEFAULT_LOCAL_MODEL_ID, FALLBACK_LOCAL_MODEL_ID
+from clients.anthropic_provider import AnthropicProvider
+from clients.local_provider import LocalProvider
+from clients.llm_provider import LLMProvider
 from utils.validators import (
     validate_mutation,
     validate_hla_allele,
@@ -68,6 +72,21 @@ def render_html_visualization(html_content: str, height: int = 600) -> None:
 
     # Render the HTML directly in an iframe component
     components.html(html_content, height=height, scrolling=True)
+
+
+def build_provider() -> LLMProvider:
+    """Construct an LLMProvider from the current session state."""
+    if st.session_state.get("anthropic_key"):
+        return AnthropicProvider(
+            api_key=st.session_state["anthropic_key"],
+            model=DEFAULT_ANTHROPIC_MODEL,
+        )
+    model_id = (
+        FALLBACK_LOCAL_MODEL_ID
+        if st.session_state.get("use_fallback_local")
+        else DEFAULT_LOCAL_MODEL_ID
+    )
+    return LocalProvider(model_id=model_id)
 
 
 # -- Page config --
@@ -930,37 +949,37 @@ Higher scores indicate more robust experimental support for immunogenicity.
 
     st.header("AI Assistant")
     st.markdown(
-        "Chat with Claude AI about your patient's results. "
-        "Claude can query CEDAR, IMGT/HLA, ClinicalTrials.gov, and PubMed for additional context."
+        "Chat with the AI about your patient's results. "
+        "The assistant can query CEDAR, IMGT/HLA, ClinicalTrials.gov, and PubMed for additional context."
     )
 
-    # --- Setup: API key ---
-    env_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if env_key:
-        st.caption("API key loaded from environment variable.")
-        api_key = env_key
-    else:
-        api_key = st.text_input(
-            "Anthropic API Key",
-            type="password",
-            key="anthropic_api_key",
-            placeholder="sk-ant-...",
-            help="Get your key at console.anthropic.com",
+    with st.sidebar:
+        st.subheader("Model")
+        model_choice = st.radio(
+            "Which model should answer?",
+            options=("Local: Qwen3-14B (free)", "Bring your own Anthropic key"),
+            index=0,
+            help=(
+                "Local runs on free Hugging Face ZeroGPU. "
+                "Bring-your-own gives Claude-quality answers but needs an API key."
+            ),
+            key="model_choice",
         )
-
-    # Model selection in sidebar-style expander
-    with st.expander("Settings", expanded=False):
-        model = st.selectbox(
-            "Model",
-            options=[
-                "claude-haiku-4-5",                 # Claude Haiku 4.5 (latest, fast, cheap) - DEFAULT
-                "claude-sonnet-4-20250514",         # Claude Sonnet 4 (newest, best accuracy)
-                "claude-3-7-sonnet-20250219",       # Claude 3.7 Sonnet (very capable)
-                "claude-3-5-sonnet-20241022",       # Claude 3.5 Sonnet (stable fallback)
-            ],
-            index=0,  # Default to Haiku
-            key="chat_model",
-            help="Haiku is fast and cheap. Use Sonnet models for more complex analysis.",
+        if model_choice == "Bring your own Anthropic key":
+            st.session_state["anthropic_key"] = st.text_input(
+                "Anthropic API key",
+                type="password",
+                value=st.session_state.get("anthropic_key", ""),
+                help="Stored only in this browser session. Never written to disk.",
+                key="anthropic_key_input",
+            )
+        else:
+            st.session_state["anthropic_key"] = ""
+        st.session_state["use_fallback_local"] = st.checkbox(
+            "Use smaller fallback model (Qwen3-4B)",
+            value=False,
+            help="Enable if the default model is timing out or quota is exhausted.",
+            key="use_fallback_local_checkbox",
         )
 
     # Check MCP server availability
@@ -1025,7 +1044,7 @@ Higher scores indicate more robust experimental support for immunogenicity.
                         st.code(json.dumps(tc.get("args", {}), indent=2), language="json")
 
     # --- Chat input ---
-    can_chat = bool(api_key) and mcp_available
+    can_chat = mcp_available
     if prompt := st.chat_input(
         "Ask about the patient's results...",
         disabled=not can_chat or st.session_state.chat_processing,
@@ -1045,7 +1064,7 @@ Higher scores indicate more robust experimental support for immunogenicity.
 
             try:
                 from clients.mcp_session import MCPSession
-                from clients.chat_client import format_results_for_chat, make_anthropic_chat_analyzer
+                from clients.chat_client import ChatAnalyzer, format_results_for_chat
 
                 # Initialize MCP session if needed
                 if st.session_state.mcp_session is None:
@@ -1057,9 +1076,10 @@ Higher scores indicate more robust experimental support for immunogenicity.
                 thinking.caption("Thinking...")
 
                 # Create analyzer and send message
-                analyzer = make_anthropic_chat_analyzer(
-                    api_key=api_key,
-                    model=model,
+                provider = build_provider()
+                st.session_state["active_model"] = provider.name
+                analyzer = ChatAnalyzer(
+                    provider=provider,
                     mcp_manager=st.session_state.mcp_session.manager,
                 )
 
