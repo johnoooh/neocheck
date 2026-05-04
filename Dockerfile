@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # Node.js 20 (for 3 of the 4 MCP servers)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,10 +16,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # App + MCP servers
 COPY . /app
 
-# Build Node MCP servers
+# Build Node MCP servers (ctgov uses bun + ships prebuilt dist; we skip its build)
 RUN cd mcp/CEDARMCP && npm ci && npm run build \
     && cd /app/mcp/imgt-hla-mcp && npm ci && npm run build \
-    && cd /app/mcp/clinicaltrialsgov-mcp-server && npm ci && npm run build
+    && cd /app/mcp/clinicaltrialsgov-mcp-server && npm ci --ignore-scripts || echo "ctgov: relying on prebuilt dist"
+
+# Install pubmedmcp into the same Python env so `python -m pubmedmcp` resolves
+RUN pip install --no-cache-dir -e /app/mcp/pubmedmcp
 
 # Pre-warm HF model cache so first request is faster (optional; ~28 GB).
 # Comment out if Space build time becomes a problem; ZeroGPU caches across runs.

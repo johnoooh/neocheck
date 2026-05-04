@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
-import spaces
+try:
+    import spaces  # type: ignore[import-not-found]
+except ImportError:  # local dev without HF Spaces runtime
+    class _SpacesShim:
+        """No-op stand-in so `@spaces.GPU(duration=...)` works locally."""
+
+        @staticmethod
+        def GPU(duration: int = 60) -> Callable[[Callable], Callable]:
+            def decorator(fn: Callable) -> Callable:
+                return fn
+            return decorator
+
+    spaces = _SpacesShim()  # type: ignore[assignment]
 
 from clients.llm_provider import ChatResponse
 from clients.local_model import (
