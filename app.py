@@ -54,6 +54,7 @@ from utils.validators import (
     normalize_hla_allele_full,
 )
 from utils.formatters import results_to_json, results_to_csv, generate_html_report, generate_chat_report
+from utils.feedback import FeedbackEntry, submit_feedback
 from utils.scoring import summarize_epitope
 
 
@@ -1181,5 +1182,60 @@ Higher scores indicate more robust experimental support for immunogenicity.
         else:
             st.button("Download Chat Report", disabled=True, use_container_width=True)
 
+    # --- Feedback expander ---
+    with st.expander("📣 Send feedback"):
+        st.caption(
+            "Help us improve NeoCheck. Do **not** paste patient identifiers. "
+            "Submissions are stored privately and read by the maintainer."
+        )
+        fb_rating = st.radio(
+            "Was this answer useful?",
+            options=("👍 Yes", "👎 No"),
+            horizontal=True,
+            index=None,
+            key="feedback_rating",
+        )
+        fb_comment = st.text_area(
+            "What worked or what didn't?",
+            max_chars=1000,
+            placeholder="Optional. Up to 1000 characters.",
+            key="feedback_comment",
+        )
+        fb_email = st.text_input(
+            "Email (optional, for follow-up)",
+            placeholder="leave blank to stay anonymous",
+            key="feedback_email",
+        )
+        if st.button("Submit feedback", disabled=fb_rating is None, key="feedback_submit"):
+            repo = os.environ.get("NEOCHECK_FEEDBACK_DATASET")
+            token = os.environ.get("HF_TOKEN")
+            if not repo or not token:
+                st.error("Feedback storage isn't configured for this deployment.")
+            else:
+                last_user, last_asst = "", ""
+                for msg in reversed(st.session_state.get("chat_messages", [])):
+                    if not last_asst and msg["role"] == "assistant":
+                        last_asst = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
+                    elif not last_user and msg["role"] == "user":
+                        last_user = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
+                    if last_user and last_asst:
+                        break
+
+                entry = FeedbackEntry(
+                    rating="up" if fb_rating.startswith("👍") else "down",
+                    comment=fb_comment or None,
+                    email=fb_email or None,
+                    model=st.session_state.get("active_model", "unknown"),
+                    mutation=results.get("mutation"),
+                    hla=results.get("hla_alleles", []),
+                    last_user_msg=last_user,
+                    last_assistant_msg=last_asst,
+                )
+                try:
+                    submit_feedback(entry, repo_id=repo, token=token)
+                    st.success("Thanks! Feedback submitted.")
+                except Exception as exc:  # noqa: BLE001
+                    # Show a short error, not a stack trace, to avoid leaking the HF token if it appears in repr
+                    st.error(f"Could not submit feedback: {type(exc).__name__}: {exc}")
 
 
