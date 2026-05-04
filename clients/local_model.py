@@ -113,3 +113,50 @@ def parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCallRequest]]:
     pieces.append(raw[last_end:])
     text = "".join(pieces).strip()
     return text, calls
+
+
+# ---------------------------------------------------------------------------
+# Generation (depends on transformers; imported lazily to keep unit tests
+# fast and to avoid loading the model when a different provider is in use).
+# ---------------------------------------------------------------------------
+
+_TOKENIZER = None
+_MODEL = None
+
+
+def _load(model_id: str) -> None:
+    """Lazy-load tokenizer and model into module globals."""
+    global _TOKENIZER, _MODEL
+    if _MODEL is not None:
+        return
+    from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: WPS433
+
+    _TOKENIZER = AutoTokenizer.from_pretrained(model_id)
+    _MODEL = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype="auto",
+        device_map="auto",
+    )
+
+
+def generate_qwen(
+    model_id: str,
+    messages: list[dict[str, str]],
+    tools: list[dict[str, Any]] | None,
+    max_new_tokens: int,
+) -> str:
+    """Run one generation and return the raw decoded string."""
+    _load(model_id)
+    template_kwargs: dict[str, Any] = {"add_generation_prompt": True, "tokenize": False}
+    if tools:
+        template_kwargs["tools"] = tools
+    prompt = _TOKENIZER.apply_chat_template(messages, **template_kwargs)
+    inputs = _TOKENIZER(prompt, return_tensors="pt").to(_MODEL.device)
+
+    out = _MODEL.generate(
+        **inputs,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+    )
+    new_tokens = out[0][inputs["input_ids"].shape[1] :]
+    return _TOKENIZER.decode(new_tokens, skip_special_tokens=True)
