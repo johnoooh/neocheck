@@ -17,7 +17,7 @@ _MAX_TEXT = 1000
 @dataclass
 class FeedbackEntry:
     rating: str  # "up" | "down"
-    comment: str
+    comment: str | None
     email: str | None
     model: str
     mutation: str | None
