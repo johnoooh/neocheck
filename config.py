@@ -91,31 +91,43 @@ FALLBACK_LOCAL_MODEL_ID = "Qwen/Qwen3-4B"
 # Default Anthropic model when user supplies their own key.
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5"
 
-# Path to MCP server directories (relative to this file's directory, i.e. neocheck/)
+# Path to MCP server directories.
+# Prefer vendored copies under `neocheck/mcp/` (used for Docker/HF Spaces builds).
+# Fall back to sibling directories in the parent repo for local dev.
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_BASE_DIR)  # NeoCheck/
+_VENDOR_DIR = os.path.join(_BASE_DIR, "mcp")
+
+
+def _mcp_path(name: str, *subpath: str) -> str:
+    """Return the path to an MCP server, preferring the vendored copy."""
+    vendored = os.path.join(_VENDOR_DIR, name, *subpath)
+    if os.path.isdir(vendored):
+        return vendored
+    return os.path.join(_PROJECT_ROOT, name, *subpath)
+
 
 MCP_SERVERS_CONFIG = {
     "cedar": {
         "command": "node",
         "args": ["dist/index.js"],
-        "cwd": os.path.join(_PROJECT_ROOT, "CEDARMCP"),
+        "cwd": _mcp_path("CEDARMCP"),
     },
     "imgt": {
         "command": "node",
         "args": ["dist/index.js"],
-        "cwd": os.path.join(_PROJECT_ROOT, "imgt-hla-mcp"),
+        "cwd": _mcp_path("imgt-hla-mcp"),
     },
     "ctgov": {
         "command": "node",
         "args": ["dist/index.js"],
-        "cwd": os.path.join(_PROJECT_ROOT, "clinicaltrialsgov-mcp-server"),
+        "cwd": _mcp_path("clinicaltrialsgov-mcp-server"),
         "env": {"MCP_TRANSPORT_TYPE": "stdio"},
     },
     "pubmed": {
         "command": "python",
         "args": ["-m", "pubmedmcp"],
-        "cwd": os.path.join(_PROJECT_ROOT, "pubmedmcp", "src"),
+        "cwd": _mcp_path("pubmedmcp", "src"),
     },
 }
 

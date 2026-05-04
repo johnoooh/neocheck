@@ -31,3 +31,7 @@ htmlcov/
 .vscode/
 *.swp
 *.swo
+
+# Vendored MCP servers — exclude transient artifacts
+mcp/*/node_modules
+mcp/*/.git

@@ -1,0 +1,11 @@
+.git
+__pycache__
+.pytest_cache
+.streamlit/secrets.toml
+tests/
+docs/
+*.pyc
+mcp/*/node_modules
+mcp/*/.git
+.venv
+venv

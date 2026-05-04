@@ -1,0 +1,27 @@
+[project]
+name = "pubmedmcp"
+dynamic = ["version"]
+description = "A MCP server for PubMed data"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.13.1",
+    "pubmedclient>=0.2.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/pubmedmcp/__init__.py"
+
+[project.scripts]
+pubmedmcp = "pubmedmcp.__main__:main"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0.1",
+    "ruff>=0.8.4",
+    "typer>=0.15.1",
+]
