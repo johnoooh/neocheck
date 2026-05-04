@@ -1,3 +1,15 @@
+---
+title: NeoCheck
+emoji: 🧬
+colorFrom: indigo
+colorTo: pink
+sdk: docker
+app_port: 7860
+pinned: false
+license: mit
+short_description: Cancer neoantigen and HLA analysis assistant
+---
+
 # 🧬 NeoCheck
 
 **Neoantigen HLA Compatibility Checker** — v1.0
