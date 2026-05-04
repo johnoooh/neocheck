@@ -56,11 +56,24 @@ from utils.validators import (
 from utils.formatters import results_to_json, results_to_csv, generate_html_report, generate_chat_report
 from utils.feedback import FeedbackEntry, submit_feedback
 from utils.scoring import summarize_epitope
+from utils.rate_limit import RateLimiter
 
 
 def _esc(text: str) -> str:
     """Escape markdown special characters (especially * in HLA allele names)."""
     return text.replace("*", "\\*")
+
+
+def _get_client_ip() -> str:
+    """Best-effort IP resolution for the current request."""
+    try:
+        if hasattr(st, "context"):
+            xff = st.context.headers.get("x-forwarded-for", "")
+            if xff:
+                return xff.split(",")[0].strip()
+    except Exception:
+        pass
+    return "anon"
 
 
 def render_html_visualization(html_content: str, height: int = 600) -> None:
@@ -1012,6 +1025,8 @@ Higher scores indicate more robust experimental support for immunogenicity.
         st.session_state.mcp_session = None
     if "chat_processing" not in st.session_state:
         st.session_state.chat_processing = False
+    if "rate_limiter" not in st.session_state:
+        st.session_state["rate_limiter"] = RateLimiter()
 
     # --- Context banner ---
     st.caption(
@@ -1091,6 +1106,14 @@ Higher scores indicate more robust experimental support for immunogenicity.
 
                 # Track current tool for UI
                 current_tool = st.empty()
+
+                # Rate-limit check before dispatching to the LLM
+                ip = _get_client_ip()
+                if not st.session_state["rate_limiter"].check(ip):
+                    thinking.empty()
+                    st.warning("Rate limit reached. Try again in an hour.")
+                    st.session_state.chat_processing = False
+                    st.stop()
 
                 def on_tool_call(tool_name: str, args: dict):
                     parts = tool_name.split("__", 1)
