@@ -88,14 +88,25 @@ def parse_qwen_tool_calls(raw: str) -> tuple[str, list[ToolCallRequest]]:
         body = m.group("body")
         try:
             data = json.loads(body)
+            if not isinstance(data, dict):
+                raise TypeError("tool_call body is not a JSON object")
+            args = data.get("arguments", {})
+            # Qwen sometimes emits arguments as a JSON-encoded string
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError:
+                    args = {}
+            if not isinstance(args, dict):
+                args = {}
             calls.append(
                 ToolCallRequest(
                     id=f"qwen_{uuid.uuid4().hex[:8]}",
                     name=data["name"],
-                    arguments=data.get("arguments", {}),
+                    arguments=args,
                 )
             )
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, TypeError):
             pieces.append(m.group(0))
         last_end = m.end()
 
