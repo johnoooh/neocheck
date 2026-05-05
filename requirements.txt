@@ -11,4 +11,9 @@ torch>=2.4
 huggingface_hub>=0.26
 datasets>=3.0
 spaces>=0.30
--e ./mcp/pubmedmcp
+# pubmedmcp runtime deps (the package itself is run from mcp/pubmedmcp/src
+# via `python -m pubmedmcp` with cwd set in MCP_SERVERS_CONFIG; HF Spaces'
+# build context only has requirements.txt mounted, so we can't pip-install
+# the local path here — only its deps).
+mcp>=1.13.1
+pubmedclient>=0.2.0
