@@ -25,6 +25,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from clients.llm_provider import build_provider as _build_provider  # noqa: E402
 from config import CANCER_TYPES, EXAMPLES, GENE_MUTATIONS  # noqa: E402
 from utils.formatters import (  # noqa: E402
     generate_html_report,
@@ -509,39 +510,110 @@ def _gene_hint(gene: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Model selector helpers (Phase 3)
+# ---------------------------------------------------------------------------
+
+MODEL_LOCAL = "Local model (Qwen3)"
+MODEL_ANTHROPIC = "Bring-your-own Anthropic key"
+
+
+def _on_model_choice_change(choice: str):
+    """Toggle the API key input visibility based on radio selection."""
+    show_key = choice == MODEL_ANTHROPIC
+    return (
+        gr.update(visible=show_key),  # api_key textbox
+        gr.update(visible=not show_key),  # use_fallback_local checkbox
+    )
+
+
+def _on_provider_inputs_change(choice: str, api_key: str, use_fallback: bool):
+    """Pack the three inputs into a single state dict for downstream handlers."""
+    return {
+        "model_choice": choice,
+        "anthropic_key": (api_key or "").strip() if choice == MODEL_ANTHROPIC else "",
+        "use_fallback_local": bool(use_fallback) and choice == MODEL_LOCAL,
+    }
+
+
+def get_provider_from_state(provider_state: dict | None):
+    """Construct an LLMProvider from the sidebar state dict.
+
+    Used by Phase 4 chat handlers; exposed here so unit tests can exercise
+    it without booting the UI.
+    """
+    state = provider_state or {}
+    return _build_provider(
+        anthropic_key=(state.get("anthropic_key") or None),
+        use_fallback_local=bool(state.get("use_fallback_local")),
+    )
+
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="NeoCheck") as demo:
         gr.Markdown("# 🧬 NeoCheck — Neoantigen HLA Compatibility Checker")
         gr.Markdown("*Data sources: CEDAR  |  IMGT/HLA  |  ClinicalTrials.gov  |  PubMed*")
 
         results_state = gr.State(None)
+        provider_state = gr.State({
+            "model_choice": MODEL_LOCAL,
+            "anthropic_key": "",
+            "use_fallback_local": False,
+        })
 
         with gr.Row(equal_height=False):
-            with gr.Column():
-                gr.Markdown("### Mutation Information")
-                gr.Markdown("**Quick examples**")
-                with gr.Row():
-                    example_btns = [gr.Button(label, size="sm") for label in EXAMPLES.keys()]
-                gene = gr.Textbox(label="Gene", placeholder="e.g., KRAS, BRAF, TP53, EGFR, IDH1")
-                mutation = gr.Textbox(label="Mutation", placeholder="e.g., G12D, V600E, R132H")
-                gene_hint_md = gr.Markdown("")
-            with gr.Column():
-                gr.Markdown("### HLA Typing")
-                hla_a1 = gr.Textbox(label="HLA-A Allele 1", placeholder="e.g., A*02:01 or HLA-A*02:01")
-                hla_a2 = gr.Textbox(label="HLA-A Allele 2", placeholder="e.g., A*11:01")
-                hla_b1 = gr.Textbox(label="HLA-B Allele 1 (optional)", placeholder="e.g., B*07:02")
-                hla_b2 = gr.Textbox(label="HLA-B Allele 2 (optional)", placeholder="e.g., B*08:01")
-                hla_c1 = gr.Textbox(label="HLA-C Allele 1 (optional)", placeholder="e.g., C*07:01")
-                hla_c2 = gr.Textbox(label="HLA-C Allele 2 (optional)", placeholder="e.g., C*07:02")
+            # ---- Sidebar (model selector) ----
+            with gr.Column(scale=1, min_width=240):
+                gr.Markdown("### Model")
+                model_choice = gr.Radio(
+                    choices=[MODEL_LOCAL, MODEL_ANTHROPIC],
+                    value=MODEL_LOCAL,
+                    label="LLM provider",
+                    info="Local runs on the Space's GPU (ZeroGPU) — no key needed.",
+                )
+                anthropic_key = gr.Textbox(
+                    label="Anthropic API key",
+                    type="password",
+                    placeholder="sk-ant-...",
+                    visible=False,
+                )
+                use_fallback_local = gr.Checkbox(
+                    label="Use smaller fallback model (Qwen3-4B)",
+                    value=False,
+                    visible=True,
+                )
+                gr.Markdown(
+                    "<small>The chat tab (Phase 4) will use this selection.</small>"
+                )
 
-        with gr.Accordion("Advanced Options", open=False):
-            cancer_type = gr.Dropdown(label="Cancer Type (optional)", choices=CANCER_TYPES, value=CANCER_TYPES[0])
-            neoantigen_only = gr.Checkbox(label="Neoantigen epitopes only", value=True)
-            max_epitopes = gr.Slider(10, 100, value=50, step=5, label="Max epitopes to retrieve")
-            max_trials = gr.Slider(5, 20, value=10, step=1, label="Max clinical trials")
-            max_pubs = gr.Slider(5, 20, value=10, step=1, label="Max publications")
+            # ---- Main content (form, results) ----
+            with gr.Column(scale=4):
+                with gr.Row(equal_height=False):
+                    with gr.Column():
+                        gr.Markdown("### Mutation Information")
+                        gr.Markdown("**Quick examples**")
+                        with gr.Row():
+                            example_btns = [gr.Button(label, size="sm") for label in EXAMPLES.keys()]
+                        gene = gr.Textbox(label="Gene", placeholder="e.g., KRAS, BRAF, TP53, EGFR, IDH1")
+                        mutation = gr.Textbox(label="Mutation", placeholder="e.g., G12D, V600E, R132H")
+                        gene_hint_md = gr.Markdown("")
+                    with gr.Column():
+                        gr.Markdown("### HLA Typing")
+                        hla_a1 = gr.Textbox(label="HLA-A Allele 1", placeholder="e.g., A*02:01 or HLA-A*02:01")
+                        hla_a2 = gr.Textbox(label="HLA-A Allele 2", placeholder="e.g., A*11:01")
+                        hla_b1 = gr.Textbox(label="HLA-B Allele 1 (optional)", placeholder="e.g., B*07:02")
+                        hla_b2 = gr.Textbox(label="HLA-B Allele 2 (optional)", placeholder="e.g., B*08:01")
+                        hla_c1 = gr.Textbox(label="HLA-C Allele 1 (optional)", placeholder="e.g., C*07:01")
+                        hla_c2 = gr.Textbox(label="HLA-C Allele 2 (optional)", placeholder="e.g., C*07:02")
 
-        run_btn = gr.Button("Run Analysis", variant="primary", size="lg")
+                with gr.Accordion("Advanced Options", open=False):
+                    cancer_type = gr.Dropdown(label="Cancer Type (optional)", choices=CANCER_TYPES, value=CANCER_TYPES[0])
+                    neoantigen_only = gr.Checkbox(label="Neoantigen epitopes only", value=True)
+                    max_epitopes = gr.Slider(10, 100, value=50, step=5, label="Max epitopes to retrieve")
+                    max_trials = gr.Slider(5, 20, value=10, step=1, label="Max clinical trials")
+                    max_pubs = gr.Slider(5, 20, value=10, step=1, label="Max publications")
+
+                run_btn = gr.Button("Run Analysis", variant="primary", size="lg")
 
         with gr.Column(visible=False) as results_section:
             gr.Markdown("## Results")
@@ -575,6 +647,20 @@ def build_ui() -> gr.Blocks:
                 json_dl = gr.DownloadButton("Download JSON", visible=False)
                 csv_dl = gr.DownloadButton("Download CSV", visible=False)
                 html_dl = gr.DownloadButton("Download HTML Report", visible=False)
+
+        # ----- Sidebar wiring -----
+        model_choice.change(
+            fn=_on_model_choice_change,
+            inputs=model_choice,
+            outputs=[anthropic_key, use_fallback_local],
+        )
+        # Pack the three sidebar inputs into provider_state on every change.
+        for ctrl in (model_choice, anthropic_key, use_fallback_local):
+            ctrl.change(
+                fn=_on_provider_inputs_change,
+                inputs=[model_choice, anthropic_key, use_fallback_local],
+                outputs=provider_state,
+            )
 
         # ----- Wire example buttons → fill inputs -----
         for i, (_label, vals) in enumerate(EXAMPLES.items()):

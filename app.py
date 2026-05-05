@@ -43,10 +43,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import GENE_MUTATIONS, EXAMPLES, CANCER_TYPES, AI_MODEL, CHAT_SYSTEM_PROMPT, MCP_SERVERS_CONFIG
-from config import DEFAULT_ANTHROPIC_MODEL, DEFAULT_LOCAL_MODEL_ID, FALLBACK_LOCAL_MODEL_ID
-from clients.anthropic_provider import AnthropicProvider
-from clients.local_provider import LocalProvider
-from clients.llm_provider import LLMProvider
+from clients.llm_provider import LLMProvider, build_provider as _build_provider
 from utils.validators import (
     validate_mutation,
     validate_hla_allele,
@@ -92,18 +89,11 @@ def render_html_visualization(html_content: str, height: int = 600) -> None:
 
 
 def build_provider() -> LLMProvider:
-    """Construct an LLMProvider from the current session state."""
-    if st.session_state.get("anthropic_key"):
-        return AnthropicProvider(
-            api_key=st.session_state["anthropic_key"],
-            model=DEFAULT_ANTHROPIC_MODEL,
-        )
-    model_id = (
-        FALLBACK_LOCAL_MODEL_ID
-        if st.session_state.get("use_fallback_local")
-        else DEFAULT_LOCAL_MODEL_ID
+    """Adapt session state to the shared `clients.llm_provider.build_provider` factory."""
+    return _build_provider(
+        anthropic_key=st.session_state.get("anthropic_key") or None,
+        use_fallback_local=bool(st.session_state.get("use_fallback_local")),
     )
-    return LocalProvider(model_id=model_id)
 
 
 # -- Page config --

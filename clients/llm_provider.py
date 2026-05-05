@@ -37,3 +37,30 @@ class LLMProvider(Protocol):
         system: str | None = None,
         max_tokens: int = 4096,
     ) -> ChatResponse: ...
+
+
+def build_provider(
+    anthropic_key: str | None = None,
+    use_fallback_local: bool = False,
+) -> LLMProvider:
+    """Construct an LLMProvider from explicit user choices.
+
+    If `anthropic_key` is provided, returns AnthropicProvider; otherwise
+    returns a LocalProvider using the default Qwen model (or the smaller
+    fallback model when `use_fallback_local` is True).
+
+    Imports of provider classes are deferred so that callers depending only
+    on the LLMProvider protocol (e.g. tests) don't pay the import cost of
+    transformers/torch.
+    """
+    if anthropic_key:
+        from clients.anthropic_provider import AnthropicProvider
+        from config import DEFAULT_ANTHROPIC_MODEL
+
+        return AnthropicProvider(api_key=anthropic_key, model=DEFAULT_ANTHROPIC_MODEL)
+
+    from clients.local_provider import LocalProvider
+    from config import DEFAULT_LOCAL_MODEL_ID, FALLBACK_LOCAL_MODEL_ID
+
+    model_id = FALLBACK_LOCAL_MODEL_ID if use_fallback_local else DEFAULT_LOCAL_MODEL_ID
+    return LocalProvider(model_id=model_id)
