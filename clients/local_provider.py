@@ -27,7 +27,11 @@ from clients.local_model import (
 )
 
 
-@spaces.GPU(duration=60)
+# 180s instead of the original 60s: the first call after a worker spawns
+# downloads ~28 GB of weights for Qwen3-14B and loads them onto the GPU,
+# which can blow past 60s on its own before any tokens are generated.
+# Subsequent calls reuse the loaded model and finish well under the cap.
+@spaces.GPU(duration=180)
 def _generate_on_gpu(
     model_id: str,
     qwen_messages: list[dict[str, str]],

@@ -655,6 +655,7 @@ async def handle_chat(
     provider_state: dict | None,
     results_state: dict | None,
     request: gr.Request,
+    progress=gr.Progress(),
 ):
     """Async chat handler. Awaits ChatAnalyzer.send_message directly under Gradio's loop.
 
@@ -707,6 +708,7 @@ async def handle_chat(
 
     # Lazy MCP init (per-session — matches ZeroGPU per-worker model)
     if state["mcp_session"] is None:
+        progress(0.1, desc="Starting MCP servers (first message only)...")
         try:
             from clients.mcp_session import MCPSession
 
@@ -729,6 +731,14 @@ async def handle_chat(
             )
 
     # Build provider on demand from the sidebar state
+    is_local = (provider_state or {}).get("model_choice") == MODEL_LOCAL or not (provider_state or {}).get("anthropic_key")
+    if is_local:
+        progress(
+            0.3,
+            desc="Loading local model… first call downloads ~28 GB to the GPU worker (1–3 min). Subsequent messages are fast.",
+        )
+    else:
+        progress(0.3, desc="Calling Anthropic API…")
     try:
         provider = get_provider_from_state(provider_state)
     except Exception as exc:
@@ -754,6 +764,7 @@ async def handle_chat(
 
     patient_context = format_results_for_chat(results_state) if not state["history"] else None
 
+    progress(0.6, desc="Thinking… (running tool calls if needed)")
     try:
         result = await analyzer.send_message(
             user_message=user_message,
@@ -785,6 +796,7 @@ async def handle_chat(
     })
     state["history"] = result["updated_history"]
 
+    progress(0.9, desc="Rendering response…")
     viz_html = _render_visualizations(state["messages"])
     has_tools, tool_md = _render_tool_calls(state["messages"])
 
