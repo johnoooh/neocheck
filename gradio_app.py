@@ -33,6 +33,10 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from clients.llm_provider import build_provider as _build_provider  # noqa: E402
+# Eagerly import local_provider so ZeroGPU sees the @spaces.GPU decorator
+# during startup. ZeroGPU rejects Spaces with no decorated GPU function
+# at import time. The actual model weights still load lazily inside chat().
+import clients.local_provider  # noqa: E402,F401
 from config import CANCER_TYPES, CHAT_SYSTEM_PROMPT, EXAMPLES, GENE_MUTATIONS, MCP_SERVERS_CONFIG  # noqa: E402
 from utils.feedback import FeedbackEntry, submit_feedback  # noqa: E402
 from utils.formatters import (  # noqa: E402
