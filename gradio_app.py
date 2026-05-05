@@ -500,7 +500,7 @@ def _format_outputs(results: dict):
         metrics_md,                                  # metrics_md
         top_html,                                    # top_html
         all_df,                                      # all_df
-        epitope_data,                                # raw_json
+        json.dumps(epitope_data, indent=2, default=str),  # raw_json (gr.Code)
         _trials_html(trials),                        # trials_html
         _publications_html(publications),            # pubs_html
         _hla_info_html(hla_info),                    # hla_html
@@ -917,9 +917,9 @@ def build_ui() -> gr.Blocks:
                 with gr.Accordion("Advanced Options", open=False):
                     cancer_type = gr.Dropdown(label="Cancer Type (optional)", choices=CANCER_TYPES, value=CANCER_TYPES[0])
                     neoantigen_only = gr.Checkbox(label="Neoantigen epitopes only", value=True)
-                    max_epitopes = gr.Slider(10, 100, value=50, step=5, label="Max epitopes to retrieve")
-                    max_trials = gr.Slider(5, 20, value=10, step=1, label="Max clinical trials")
-                    max_pubs = gr.Slider(5, 20, value=10, step=1, label="Max publications")
+                    max_epitopes = gr.Slider(10, 100, value=20, step=5, label="Max epitopes to retrieve")
+                    max_trials = gr.Slider(5, 20, value=5, step=1, label="Max clinical trials")
+                    max_pubs = gr.Slider(5, 20, value=5, step=1, label="Max publications")
 
                 run_btn = gr.Button("Run Analysis", variant="primary", size="lg")
 
@@ -932,11 +932,14 @@ def build_ui() -> gr.Blocks:
                 with gr.Tab("Top Epitopes"):
                     top_html = gr.HTML()
                 with gr.Tab("All Epitopes"):
-                    all_df = gr.Dataframe(interactive=False, wrap=True)
+                    all_df = gr.Dataframe(interactive=False, wrap=True, max_height=420)
                 with gr.Tab("Scoring"):
                     gr.Markdown(SCORING_MD)
                 with gr.Tab("Raw Data"):
-                    raw_json = gr.JSON()
+                    # Code (text) is much lighter than gr.JSON's tree-renderer
+                    # for large epitope payloads — the freeze after analysis was
+                    # gr.JSON serializing every nested field client-side.
+                    raw_json = gr.Code(language="json", interactive=False, max_lines=30)
 
             gr.Markdown("### Clinical Trials")
             trials_html = gr.HTML()

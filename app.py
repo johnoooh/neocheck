@@ -507,9 +507,9 @@ with col_hla:
 with st.expander("Advanced Options"):
     cancer_type = st.selectbox("Cancer Type (optional)", CANCER_TYPES)
     neoantigen_only = st.checkbox("Neoantigen epitopes only", value=True)
-    max_epitopes = st.slider("Max epitopes to retrieve", 10, 100, 50)
-    max_trials = st.slider("Max clinical trials", 5, 20, 10)
-    max_pubs = st.slider("Max publications", 5, 20, 10)
+    max_epitopes = st.slider("Max epitopes to retrieve", 10, 100, 20)
+    max_trials = st.slider("Max clinical trials", 5, 20, 5)
+    max_pubs = st.slider("Max publications", 5, 20, 5)
 
 
 # ============================================================
