@@ -1063,8 +1063,13 @@ def build_ui() -> gr.Blocks:
     return demo
 
 
+# Module-level Blocks instance — HF Spaces' Gradio runner imports this
+# module and calls `demo.launch()` itself, so `demo` must exist at import
+# time. Local `python gradio_app.py` still works via the __main__ block.
+demo = build_ui()
+
 if __name__ == "__main__":
-    build_ui().launch(
+    demo.launch(
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 7860)),
         css=CSS,
