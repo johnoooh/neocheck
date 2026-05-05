@@ -13,6 +13,7 @@ to work; both apps share `analyzers/`, `utils/`, `clients/`, and
 from __future__ import annotations
 
 import functools
+import json
 import os
 import sys
 import tempfile
@@ -26,12 +27,15 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from clients.llm_provider import build_provider as _build_provider  # noqa: E402
-from config import CANCER_TYPES, EXAMPLES, GENE_MUTATIONS  # noqa: E402
+from config import CANCER_TYPES, CHAT_SYSTEM_PROMPT, EXAMPLES, GENE_MUTATIONS, MCP_SERVERS_CONFIG  # noqa: E402
+from utils.feedback import FeedbackEntry, submit_feedback  # noqa: E402
 from utils.formatters import (  # noqa: E402
+    generate_chat_report,
     generate_html_report,
     results_to_csv,
     results_to_json,
 )
+from utils.rate_limit import RateLimiter  # noqa: E402
 from utils.scoring import summarize_epitope  # noqa: E402
 from utils.validators import (  # noqa: E402
     normalize_hla_allele,
@@ -39,6 +43,10 @@ from utils.validators import (  # noqa: E402
     validate_hla_allele,
     validate_mutation,
 )
+
+
+# Process-wide rate limiter (matches app.py)
+_RATE_LIMITER = RateLimiter()
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +557,296 @@ def get_provider_from_state(provider_state: dict | None):
     )
 
 
+# ---------------------------------------------------------------------------
+# Chat (Phase 4)
+# ---------------------------------------------------------------------------
+
+def _initial_chat_state() -> dict:
+    return {"messages": [], "history": [], "mcp_session": None, "active_model": None}
+
+
+def _to_chatbot_messages(messages: list[dict]) -> list[dict]:
+    """Strip rich metadata to gr.Chatbot's {role, content} format."""
+    return [{"role": m["role"], "content": m.get("content", "")} for m in messages]
+
+
+def _client_ip(request: gr.Request | None) -> str:
+    if request is None:
+        return "anon"
+    try:
+        xff = (request.headers or {}).get("x-forwarded-for", "") if request.headers else ""
+        if xff:
+            return xff.split(",")[0].strip()
+        if request.client and request.client.host:
+            return request.client.host
+    except Exception:
+        pass
+    return "anon"
+
+
+def _render_visualizations(messages: list[dict]) -> str:
+    """Concatenate IMGT-style HTML visualizations from all assistant messages (newest first).
+
+    Each visualization is wrapped in an iframe with srcdoc so its internal
+    <style>/<script> can't bleed into the parent Gradio layout.
+    """
+    blocks: list[str] = []
+    for msg in reversed(messages):
+        for html_out in msg.get("html_outputs", []) or []:
+            tool_name = html_out.get("tool", "visualization").replace("__", " › ")
+            summary = html_out.get("summary") or {}
+            summary_html = ""
+            if summary:
+                summary_html = (
+                    '<div style="background:#e8f0ff;padding:8px 12px;border-radius:6px;'
+                    'margin:8px 0;font-size:0.92rem;">'
+                    f'<b>Summary:</b> {summary.get("protein_differences", "?")} '
+                    f'protein differences, {summary.get("peptide_binding_differences", "?")} '
+                    'in peptide binding sites</div>'
+                )
+            srcdoc = (html_out.get("html") or "").replace("&", "&amp;").replace('"', "&quot;")
+            blocks.append(
+                '<details open style="margin-bottom:16px;border:1px solid #e0e0e0;'
+                'border-radius:8px;padding:8px;">'
+                f'<summary style="cursor:pointer;"><b>📊 Visualization from {tool_name}</b></summary>'
+                f'{summary_html}'
+                f'<iframe srcdoc="{srcdoc}" width="100%" height="700" '
+                'style="border:none;border-radius:6px;"></iframe>'
+                '</details>'
+            )
+    return "".join(blocks)
+
+
+def _render_tool_calls(messages: list[dict]) -> tuple[bool, str]:
+    """Build a Markdown view of the most recent assistant message's tool calls."""
+    for msg in reversed(messages):
+        if msg["role"] == "assistant" and msg.get("tool_calls"):
+            tcs = msg["tool_calls"]
+            md_lines = []
+            for tc in tcs:
+                args_json = json.dumps(tc.get("args", {}), indent=2)
+                md_lines.append(f"**{tc.get('tool', '?')}**\n```json\n{args_json}\n```")
+            return True, "\n\n".join(md_lines)
+    return False, ""
+
+
+def _format_chat_context(results: dict | None) -> str:
+    if not results:
+        return "*Run an analysis above so the assistant has patient context.*"
+    return (
+        f"*Patient context: **{results.get('gene', '?')} {results.get('mutation', '?')}** "
+        f"— HLA: {', '.join(results.get('hla_alleles', []))}*"
+    )
+
+
+async def handle_chat(
+    user_message: str,
+    chat_state: dict | None,
+    provider_state: dict | None,
+    results_state: dict | None,
+    request: gr.Request,
+):
+    """Async chat handler. Awaits ChatAnalyzer.send_message directly under Gradio's loop.
+
+    Outputs (must match the order wired in build_ui):
+        chatbot, chat_state, viz_html, tool_calls_acc (visibility),
+        tool_calls_md, chat_input (clear), download_chat_btn
+    """
+    state = chat_state if chat_state is not None else _initial_chat_state()
+
+    # Empty input → no-op
+    if not user_message or not user_message.strip():
+        return (
+            _to_chatbot_messages(state["messages"]),
+            state,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(value=""),
+            gr.update(),
+        )
+
+    # Need analysis results before chatting (mirrors app.py gating)
+    if not results_state:
+        gr.Warning("Run an analysis first so the assistant has patient context.")
+        return (
+            _to_chatbot_messages(state["messages"]),
+            state,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(value=user_message),
+            gr.update(),
+        )
+
+    ip = _client_ip(request)
+    if not _RATE_LIMITER.check(ip):
+        gr.Warning("Rate limit reached. Try again in an hour.")
+        return (
+            _to_chatbot_messages(state["messages"]),
+            state,
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(value=user_message),
+            gr.update(),
+        )
+
+    # Append user message to local list immediately (so it appears in chatbot before LLM call)
+    state["messages"].append({"role": "user", "content": user_message})
+
+    # Lazy MCP init (per-session — matches ZeroGPU per-worker model)
+    if state["mcp_session"] is None:
+        try:
+            from clients.mcp_session import MCPSession
+
+            state["mcp_session"] = MCPSession(MCP_SERVERS_CONFIG)
+            await state["mcp_session"].ensure_started()
+        except Exception as exc:
+            state["messages"].append({
+                "role": "assistant",
+                "content": f"Could not start MCP servers: {exc}",
+                "tool_calls": None,
+            })
+            return (
+                _to_chatbot_messages(state["messages"]),
+                state,
+                gr.update(),
+                gr.update(visible=False),
+                gr.update(value=""),
+                gr.update(value=""),
+                gr.update(visible=False),
+            )
+
+    # Build provider on demand from the sidebar state
+    try:
+        provider = get_provider_from_state(provider_state)
+    except Exception as exc:
+        state["messages"].append({
+            "role": "assistant",
+            "content": f"Could not initialize the model: {exc}",
+            "tool_calls": None,
+        })
+        return (
+            _to_chatbot_messages(state["messages"]),
+            state,
+            gr.update(),
+            gr.update(visible=False),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(visible=False),
+        )
+    state["active_model"] = provider.name
+
+    from clients.chat_client import ChatAnalyzer, format_results_for_chat
+
+    analyzer = ChatAnalyzer(provider=provider, mcp_manager=state["mcp_session"].manager)
+
+    patient_context = format_results_for_chat(results_state) if not state["history"] else None
+
+    try:
+        result = await analyzer.send_message(
+            user_message=user_message,
+            conversation_history=state["history"],
+            system_prompt=CHAT_SYSTEM_PROMPT,
+            patient_context=patient_context,
+        )
+    except Exception as exc:
+        state["messages"].append({
+            "role": "assistant",
+            "content": f"I encountered an error: {exc}",
+            "tool_calls": None,
+        })
+        return (
+            _to_chatbot_messages(state["messages"]),
+            state,
+            gr.update(),
+            gr.update(visible=False),
+            gr.update(value=""),
+            gr.update(value=""),
+            gr.update(visible=False),
+        )
+
+    state["messages"].append({
+        "role": "assistant",
+        "content": result["response"],
+        "tool_calls": result["tool_calls"],
+        "html_outputs": result.get("html_outputs", []),
+    })
+    state["history"] = result["updated_history"]
+
+    viz_html = _render_visualizations(state["messages"])
+    has_tools, tool_md = _render_tool_calls(state["messages"])
+
+    # Generate downloadable chat report
+    mutation_str = (results_state or {}).get("mutation", "unknown")
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    report_path = _write_temp(
+        f"neocheck_chat_{mutation_str}_{ts}.html",
+        generate_chat_report(chat_messages=state["messages"], patient_context=results_state),
+    )
+
+    return (
+        _to_chatbot_messages(state["messages"]),
+        state,
+        gr.update(value=viz_html, visible=bool(viz_html)),
+        gr.update(visible=has_tools),
+        gr.update(value=tool_md),
+        gr.update(value=""),
+        gr.update(value=report_path, visible=True),
+    )
+
+
+def reset_chat(chat_state: dict | None):
+    """Clear chat history. MCP session reference is dropped; __del__ best-effort cleans up."""
+    return (
+        [],                                      # chatbot
+        _initial_chat_state(),                   # chat_state
+        gr.update(value="", visible=False),      # viz_html
+        gr.update(visible=False),                # tool_calls_acc
+        gr.update(value=""),                     # tool_calls_md
+        gr.update(value=""),                     # chat_input
+        gr.update(value=None, visible=False),    # download_chat_btn
+    )
+
+
+def submit_feedback_handler(rating, comment, email, chat_state, results_state):
+    repo = os.environ.get("NEOCHECK_FEEDBACK_DATASET")
+    token = os.environ.get("HF_TOKEN")
+    if not repo or not token:
+        gr.Warning("Feedback storage isn't configured for this deployment.")
+        return
+    if not rating:
+        gr.Warning("Pick 👍 or 👎 first.")
+        return
+
+    state = chat_state or _initial_chat_state()
+    last_user, last_asst = "", ""
+    for msg in reversed(state.get("messages", [])):
+        if not last_asst and msg["role"] == "assistant":
+            last_asst = str(msg.get("content") or "")
+        elif not last_user and msg["role"] == "user":
+            last_user = str(msg.get("content") or "")
+        if last_user and last_asst:
+            break
+
+    entry = FeedbackEntry(
+        rating="up" if rating.startswith("👍") else "down",
+        comment=(comment or None),
+        email=(email or None),
+        model=state.get("active_model") or "unknown",
+        mutation=(results_state or {}).get("mutation"),
+        hla=(results_state or {}).get("hla_alleles", []),
+        last_user_msg=last_user,
+        last_assistant_msg=last_asst,
+    )
+    try:
+        submit_feedback(entry, repo_id=repo, token=token)
+        gr.Info("Thanks! Feedback submitted.")
+    except Exception as exc:  # noqa: BLE001
+        gr.Warning(f"Could not submit feedback: {type(exc).__name__}: {exc}")
+
+
 def build_ui() -> gr.Blocks:
     with gr.Blocks(title="NeoCheck") as demo:
         gr.Markdown("# 🧬 NeoCheck — Neoantigen HLA Compatibility Checker")
@@ -648,6 +946,50 @@ def build_ui() -> gr.Blocks:
                 csv_dl = gr.DownloadButton("Download CSV", visible=False)
                 html_dl = gr.DownloadButton("Download HTML Report", visible=False)
 
+            # ---- AI Assistant (chat) ----
+            gr.Markdown("## AI Assistant")
+            chat_context_md = gr.Markdown(_format_chat_context(None))
+            chat_state = gr.State(_initial_chat_state())
+
+            chatbot = gr.Chatbot(
+                height=520,
+                avatar_images=(None, None),
+            )
+            viz_html = gr.HTML(visible=False)
+            with gr.Accordion("Tool calls", open=False, visible=False) as tool_calls_acc:
+                tool_calls_md = gr.Markdown()
+            chat_input = gr.Textbox(
+                placeholder="Ask about the patient's results…",
+                lines=2,
+                show_label=False,
+            )
+            with gr.Row():
+                send_btn = gr.Button("Send", variant="primary", scale=4)
+                new_chat_btn = gr.Button("New chat", scale=1)
+            download_chat_btn = gr.DownloadButton("Download chat report", visible=False)
+
+            with gr.Accordion("📣 Send feedback", open=False):
+                gr.Markdown(
+                    "<small>Help us improve NeoCheck. Do **not** paste patient identifiers. "
+                    "Submissions are stored privately and read by the maintainer.</small>"
+                )
+                fb_rating = gr.Radio(
+                    choices=["👍 Yes", "👎 No"],
+                    label="Was this answer useful?",
+                    value=None,
+                )
+                fb_comment = gr.Textbox(
+                    label="What worked or what didn't?",
+                    placeholder="Optional. Up to 1000 characters.",
+                    lines=2,
+                    max_length=1000,
+                )
+                fb_email = gr.Textbox(
+                    label="Email (optional, for follow-up)",
+                    placeholder="leave blank to stay anonymous",
+                )
+                fb_submit = gr.Button("Submit feedback")
+
         # ----- Sidebar wiring -----
         model_choice.change(
             fn=_on_model_choice_change,
@@ -691,6 +1033,31 @@ def build_ui() -> gr.Blocks:
                 json_dl, csv_dl, html_dl,
                 results_state,
             ],
+        )
+
+        # ----- Patient context banner under the chat header -----
+        results_state.change(
+            fn=_format_chat_context,
+            inputs=results_state,
+            outputs=chat_context_md,
+        )
+
+        # ----- Chat wiring -----
+        chat_outputs = [
+            chatbot, chat_state,
+            viz_html, tool_calls_acc, tool_calls_md,
+            chat_input, download_chat_btn,
+        ]
+        chat_inputs = [chat_input, chat_state, provider_state, results_state]
+        send_btn.click(handle_chat, inputs=chat_inputs, outputs=chat_outputs)
+        chat_input.submit(handle_chat, inputs=chat_inputs, outputs=chat_outputs)
+        new_chat_btn.click(reset_chat, inputs=chat_state, outputs=chat_outputs)
+
+        # ----- Feedback -----
+        fb_submit.click(
+            submit_feedback_handler,
+            inputs=[fb_rating, fb_comment, fb_email, chat_state, results_state],
+            outputs=None,
         )
 
     return demo

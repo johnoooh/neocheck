@@ -288,6 +288,54 @@ class ChatAnalyzer:
         self.provider = provider
         self.mcp_manager = mcp_manager
 
+    @staticmethod
+    def _short_circuit_invalid_input(
+        user_message: str,
+        conversation_history: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Return an off-topic response dict if input is invalid, else None.
+
+        Shared validation gate used by both sync and async entry points so the
+        LLM is never called for blocked input.
+        """
+        is_valid, error_msg = validate_user_input(user_message)
+        if is_valid:
+            return None
+        offtopic_response = error_msg if error_msg else get_offtopic_response()
+        updated_history = list(conversation_history)
+        updated_history.append({"role": "user", "content": user_message})
+        updated_history.append(
+            {"role": "assistant", "content": [{"type": "text", "text": offtopic_response}]}
+        )
+        return {
+            "response": offtopic_response,
+            "tool_calls": [],
+            "updated_history": updated_history,
+            "html_outputs": [],
+        }
+
+    async def send_message(
+        self,
+        user_message: str,
+        conversation_history: list[dict[str, Any]],
+        system_prompt: str,
+        patient_context: str | None = None,
+        max_tool_rounds: int = 10,
+        on_tool_call: Callable[[str, dict], None] | None = None,
+    ) -> dict[str, Any]:
+        """Async chat entry point. Use directly from async handlers (e.g. Gradio)."""
+        blocked = self._short_circuit_invalid_input(user_message, conversation_history)
+        if blocked is not None:
+            return blocked
+        return await self._send_message(
+            user_message,
+            conversation_history,
+            system_prompt,
+            patient_context,
+            max_tool_rounds,
+            on_tool_call,
+        )
+
     def send_message_sync(
         self,
         user_message: str,
@@ -298,48 +346,24 @@ class ChatAnalyzer:
         on_tool_call: Callable[[str, dict], None] | None = None,
     ) -> dict[str, Any]:
         """
-        Synchronous wrapper for send_message.
-
-        Args:
-            user_message: The user's new message
-            conversation_history: Previous messages in Anthropic API format
-            system_prompt: System prompt for Claude
-            patient_context: Optional formatted patient data (added to first message only)
-            max_tool_rounds: Maximum tool-use iterations per message
-            on_tool_call: Callback when a tool is called (tool_name, args)
+        Synchronous wrapper for send_message — used by Streamlit (app.py).
 
         Returns:
             {
-                "response": str,  # Claude's text response
-                "tool_calls": list[dict],  # Tool calls made {tool, args, result_preview}
-                "updated_history": list[dict],  # Full conversation for next turn
+                "response": str,
+                "tool_calls": list[dict],
+                "updated_history": list[dict],
+                "html_outputs": list[dict],
             }
         """
-        # Validate user input for security and topic relevance
-        is_valid, error_msg = validate_user_input(user_message)
-        if not is_valid:
-            # Return an off-topic/security response without calling the LLM
-            offtopic_response = error_msg if error_msg else get_offtopic_response()
-            # Add to history so context is preserved
-            updated_history = list(conversation_history)
-            updated_history.append({"role": "user", "content": user_message})
-            updated_history.append({"role": "assistant", "content": [{"type": "text", "text": offtopic_response}]})
-            return {
-                "response": offtopic_response,
-                "tool_calls": [],
-                "updated_history": updated_history,
-                "html_outputs": [],
-            }
+        blocked = self._short_circuit_invalid_input(user_message, conversation_history)
+        if blocked is not None:
+            return blocked
 
-        # Get the current event loop (or create one if needed)
-        # This ensures we reuse the same loop that MCP servers are attached to
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-
-        # Use the existing loop instead of asyncio.run() which creates a new loop
-        # nest_asyncio allows running coroutines in an already-running loop
         return loop.run_until_complete(
             self._send_message(
                 user_message,

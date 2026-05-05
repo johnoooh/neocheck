@@ -3,8 +3,11 @@ title: NeoCheck
 emoji: 🧬
 colorFrom: indigo
 colorTo: pink
-sdk: docker
-app_port: 7860
+sdk: gradio
+sdk_version: "6.14.0"
+app_file: gradio_app.py
+python_version: "3.12"
+hardware: zero-a10g
 pinned: false
 license: mit
 short_description: Cancer neoantigen and HLA analysis assistant
