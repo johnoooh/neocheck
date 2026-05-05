@@ -1074,6 +1074,15 @@ def build_ui() -> gr.Blocks:
 # time. Local `python gradio_app.py` still works via the __main__ block.
 demo = build_ui()
 
+# Force ssr_mode=False for every caller (HF Spaces' runner overrides our
+# env var; SSR's Node sidecar gets killed in the Spaces container). Wrap
+# launch so we don't have to rely on env vars or constructor flags.
+_orig_launch = demo.launch
+def _launch_no_ssr(*args, **kwargs):
+    kwargs.setdefault("ssr_mode", False)
+    return _orig_launch(*args, **kwargs)
+demo.launch = _launch_no_ssr
+
 if __name__ == "__main__":
     demo.launch(
         server_name="0.0.0.0",
