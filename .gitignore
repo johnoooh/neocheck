@@ -35,3 +35,8 @@ htmlcov/
 # Vendored MCP servers — exclude transient artifacts
 mcp/*/node_modules
 mcp/*/.git
+# Pre-built JS bundles for vendored MCP servers ARE committed (overrides
+# the global `dist/` rule above) so HF Gradio Spaces — which don't run a
+# Dockerfile or `npm run build` — can launch them via `node dist/index.js`.
+!mcp/*/dist/
+!mcp/*/dist/**

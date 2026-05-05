@@ -1,4 +1,5 @@
 streamlit>=1.32.0
+gradio>=4.44
 pandas>=2.0.0
 plotly>=5.18.0
 requests>=2.33.0
@@ -9,3 +10,4 @@ torch>=2.4
 huggingface_hub>=0.26
 datasets>=3.0
 spaces>=0.30
+-e ./mcp/pubmedmcp
