@@ -21,6 +21,12 @@ import time
 from datetime import datetime
 from typing import Any
 
+# HF Spaces calls demo.launch() itself, so we can't pass ssr_mode=False there.
+# Disable Gradio 6's experimental SSR mode (Node.js sidecar) before importing
+# gradio — the sidecar gets killed in the HF Spaces container, crashing the
+# app right after it boots.
+os.environ.setdefault("GRADIO_SSR_MODE", "False")
+
 import gradio as gr
 import pandas as pd
 
