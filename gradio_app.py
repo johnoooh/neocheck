@@ -27,6 +27,45 @@ from typing import Any
 # app right after it boots.
 os.environ.setdefault("GRADIO_SSR_MODE", "False")
 
+
+def _bootstrap_node_mcps() -> None:
+    """Install Node deps for vendored MCP servers if missing.
+
+    HF Spaces' Gradio SDK uploads our committed `mcp/<server>/` trees but
+    skips `node_modules`, so the Node MCPs fail with ERR_MODULE_NOT_FOUND.
+    Install once on first boot when node_modules is absent.
+    """
+    import shutil
+    import subprocess
+
+    base = os.path.dirname(os.path.abspath(__file__))
+    npm = shutil.which("npm")
+    if not npm:
+        return
+    for sub in ("CEDARMCP", "imgt-hla-mcp", "clinicaltrialsgov-mcp-server"):
+        cwd = os.path.join(base, "mcp", sub)
+        if not os.path.isdir(cwd):
+            continue
+        if os.path.isdir(os.path.join(cwd, "node_modules")):
+            continue
+        if not os.path.isfile(os.path.join(cwd, "package-lock.json")):
+            continue
+        t0 = time.time()
+        print(f"[bootstrap] npm ci in {sub}…", flush=True)
+        try:
+            subprocess.run(
+                [npm, "ci", "--omit=dev", "--no-audit", "--no-fund", "--legacy-peer-deps"],
+                cwd=cwd,
+                timeout=300,
+                check=True,
+            )
+            print(f"[bootstrap] {sub} ready in {time.time() - t0:.1f}s", flush=True)
+        except Exception as exc:  # noqa: BLE001 — non-fatal: chat falls back to other servers
+            print(f"[bootstrap] {sub} install FAILED: {exc}", flush=True)
+
+
+_bootstrap_node_mcps()
+
 import gradio as gr
 import pandas as pd
 
