@@ -609,10 +609,29 @@ def _format_outputs(results: dict, *, partial: bool = False, state: dict | None 
         top_html = "<p><i>No epitopes found for this mutation. Try removing the neoantigen filter in Advanced Options.</i></p>"
         all_df = pd.DataFrame()
 
+    # raw_json is shipped as a string into a syntax-highlighted gr.Code
+    # component. Each token in the parsed tree becomes a Svelte reactive
+    # node — for KRAS-class epitope payloads this is megabytes of JSON
+    # and tens of thousands of nodes per revive, which contributes
+    # heavily to the "Set maximum size exceeded" overflow. Truncate to a
+    # small preview (the full data is downloadable via the JSON button).
+    raw_json_full = json.dumps(epitope_data, indent=2, default=str)
+    if len(raw_json_full) > 20_000:
+        raw_json_value = (
+            raw_json_full[:20_000]
+            + f"\n\n// … truncated ({len(raw_json_full):,} chars total). "
+            "Use the Download JSON button for the full payload."
+        )
+    else:
+        raw_json_value = raw_json_full
+
     if partial:
         json_dl = gr.update(visible=False)
         csv_dl = gr.update(visible=False)
         html_dl = gr.update(visible=False)
+        # Skip the raw_json update on partial yields so the Code component
+        # only revives once (on the final yield) instead of three times.
+        raw_json_out: Any = gr.update()
     else:
         mutation_str = results.get("mutation", "unknown")
         ts = datetime.now().strftime("%Y%m%d")
@@ -622,13 +641,14 @@ def _format_outputs(results: dict, *, partial: bool = False, state: dict | None 
         json_dl = gr.update(value=json_path, visible=True)
         csv_dl = gr.update(value=csv_path, visible=True)
         html_dl = gr.update(value=html_path, visible=True)
+        raw_json_out = raw_json_value
 
     return (
         gr.update(visible=True),                    # results_section
         metrics_md,                                  # metrics_md
         top_html,                                    # top_html
         all_df,                                      # all_df
-        json.dumps(epitope_data, indent=2, default=str),  # raw_json (gr.Code)
+        raw_json_out,                                # raw_json (gr.Code)
         _trials_html(trials),                        # trials_html
         _publications_html(publications),            # pubs_html
         _hla_info_html(hla_info),                    # hla_html
