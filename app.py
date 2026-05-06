@@ -964,7 +964,7 @@ Higher scores indicate more robust experimental support for immunogenicity.
         st.subheader("Model")
         model_choice = st.radio(
             "Which model should answer?",
-            options=("Local: Qwen3-14B (free)", "Bring your own Anthropic key"),
+            options=("Local: Qwen3.6-27B AWQ (free)", "Bring your own Anthropic key"),
             index=0,
             help=(
                 "Local runs on free Hugging Face ZeroGPU. "

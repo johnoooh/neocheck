@@ -18,6 +18,7 @@ import os
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
 
@@ -230,61 +231,78 @@ def run_analysis(
         "gene": inputs["gene"],
         "mutation": inputs["mutation"],
         "hla_alleles": inputs["hla_alleles"],
+        "detailed_epitopes": [],
     }
 
-    progress(0.10, desc="Searching CEDAR for epitopes...")
-    try:
-        results["epitopes"] = cached_search_epitopes(
-            mutation=inputs["mutation"],
-            hla_alleles_tuple=tuple(inputs["hla_alleles"]),
-            neoantigen_only=inputs["neoantigen_only"],
-            limit=inputs["max_epitopes"],
+    full_alleles: list[str] = []
+    for a in inputs["hla_alleles"]:
+        full = normalize_hla_allele_full(a)
+        full_alleles.append(full or a.replace("HLA-", ""))
+
+    progress(0.10, desc="Querying CEDAR, IMGT, ClinicalTrials & PubMed in parallel…")
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        f_ep = pool.submit(
+            cached_search_epitopes,
+            inputs["mutation"], tuple(inputs["hla_alleles"]),
+            inputs["neoantigen_only"], inputs["max_epitopes"],
         )
-    except Exception as e:
-        gr.Warning(f"CEDAR epitope search failed: {e}")
-        results["epitopes"] = {"epitopes": [], "total_count": 0, "hla_matched_count": 0}
-
-    progress(0.30, desc="Validating HLA alleles with IMGT...")
-    try:
-        full_alleles = []
-        for a in inputs["hla_alleles"]:
-            full = normalize_hla_allele_full(a)
-            full_alleles.append(full or a.replace("HLA-", ""))
-        results["hla_info"] = cached_fetch_hla_info(tuple(full_alleles))
-    except Exception as e:
-        gr.Warning(f"IMGT HLA lookup: {e}")
-        results["hla_info"] = []
-
-    progress(0.50, desc="Searching ClinicalTrials.gov...")
-    try:
-        results["trials"] = cached_search_trials(
+        f_hla = pool.submit(cached_fetch_hla_info, tuple(full_alleles))
+        f_trials = pool.submit(
+            cached_search_trials,
             inputs["gene"], inputs["mutation"], inputs["cancer_type"], inputs["max_trials"],
         )
-    except Exception as e:
-        gr.Warning(f"Clinical trials search: {e}")
-        results["trials"] = []
-
-    progress(0.70, desc="Searching PubMed...")
-    try:
-        results["publications"] = cached_search_publications(
+        f_pubs = pool.submit(
+            cached_search_publications,
             inputs["gene"], inputs["mutation"], inputs["max_pubs"],
         )
-    except Exception as e:
-        gr.Warning(f"PubMed search: {e}")
-        results["publications"] = []
 
-    progress(0.85, desc="Fetching detailed data for top epitopes...")
-    top = results["epitopes"].get("epitopes", [])[:3]
-    detailed: list[Any] = []
-    for ep in top:
         try:
-            detailed.append(cached_get_epitope_details(ep["structure_id"], inputs["mutation"]))
-        except Exception:
-            detailed.append(None)
+            results["epitopes"] = f_ep.result()
+        except Exception as e:
+            gr.Warning(f"CEDAR epitope search failed: {e}")
+            results["epitopes"] = {"epitopes": [], "total_count": 0, "hla_matched_count": 0}
+
+        try:
+            results["hla_info"] = f_hla.result()
+        except Exception as e:
+            gr.Warning(f"IMGT HLA lookup: {e}")
+            results["hla_info"] = []
+
+        try:
+            results["trials"] = f_trials.result()
+        except Exception as e:
+            gr.Warning(f"Clinical trials search: {e}")
+            results["trials"] = []
+
+        try:
+            results["publications"] = f_pubs.result()
+        except Exception as e:
+            gr.Warning(f"PubMed search: {e}")
+            results["publications"] = []
+
+    # Yield partial results so the UI can paint epitopes/trials/pubs/HLA
+    # while the per-epitope detail calls run.
+    progress(0.75, desc="Fetching detailed data for top epitopes…")
+    yield _format_outputs(results, partial=True)
+
+    top = results["epitopes"].get("epitopes", [])[:3]
+    detailed: list[Any] = [None] * len(top)
+    if top:
+        with ThreadPoolExecutor(max_workers=min(3, len(top))) as pool:
+            futures = {
+                pool.submit(cached_get_epitope_details, ep["structure_id"], inputs["mutation"]): i
+                for i, ep in enumerate(top)
+            }
+            for fut in as_completed(futures):
+                i = futures[fut]
+                try:
+                    detailed[i] = fut.result()
+                except Exception:
+                    detailed[i] = None
     results["detailed_epitopes"] = detailed
 
     progress(1.0, desc="Done")
-    return _format_outputs(results)
+    yield _format_outputs(results)
 
 
 # ---------------------------------------------------------------------------
@@ -488,7 +506,7 @@ def _write_temp(name: str, body: str) -> str:
     return path
 
 
-def _format_outputs(results: dict):
+def _format_outputs(results: dict, *, partial: bool = False):
     epitope_data = results.get("epitopes", {}) or {}
     epitopes = epitope_data.get("epitopes", []) or []
     trials = results.get("trials", []) or []
@@ -531,11 +549,19 @@ def _format_outputs(results: dict):
         top_html = "<p><i>No epitopes found for this mutation. Try removing the neoantigen filter in Advanced Options.</i></p>"
         all_df = pd.DataFrame()
 
-    mutation_str = results.get("mutation", "unknown")
-    ts = datetime.now().strftime("%Y%m%d")
-    json_path = _write_temp(f"neocheck_{mutation_str}_{ts}.json", results_to_json(results))
-    csv_path = _write_temp(f"neocheck_{mutation_str}_{ts}.csv", results_to_csv(results))
-    html_path = _write_temp(f"neocheck_{mutation_str}_{ts}.html", generate_html_report(results))
+    if partial:
+        json_dl = gr.update(visible=False)
+        csv_dl = gr.update(visible=False)
+        html_dl = gr.update(visible=False)
+    else:
+        mutation_str = results.get("mutation", "unknown")
+        ts = datetime.now().strftime("%Y%m%d")
+        json_path = _write_temp(f"neocheck_{mutation_str}_{ts}.json", results_to_json(results))
+        csv_path = _write_temp(f"neocheck_{mutation_str}_{ts}.csv", results_to_csv(results))
+        html_path = _write_temp(f"neocheck_{mutation_str}_{ts}.html", generate_html_report(results))
+        json_dl = gr.update(value=json_path, visible=True)
+        csv_dl = gr.update(value=csv_path, visible=True)
+        html_dl = gr.update(value=html_path, visible=True)
 
     return (
         gr.update(visible=True),                    # results_section
@@ -546,9 +572,9 @@ def _format_outputs(results: dict):
         _trials_html(trials),                        # trials_html
         _publications_html(publications),            # pubs_html
         _hla_info_html(hla_info),                    # hla_html
-        gr.update(value=json_path, visible=True),    # json_dl
-        gr.update(value=csv_path, visible=True),     # csv_dl
-        gr.update(value=html_path, visible=True),    # html_dl
+        json_dl,                                     # json_dl
+        csv_dl,                                      # csv_dl
+        html_dl,                                     # html_dl
         results,                                     # results_state
     )
 
@@ -1018,7 +1044,7 @@ def build_ui() -> gr.Blocks:
             chat_context_md = gr.Markdown(_format_chat_context(None))
             chat_state = gr.State(_initial_chat_state())
 
-            chatbot = gr.Chatbot(height=520)
+            chatbot = gr.Chatbot(height=520, type="messages")
             viz_html = gr.HTML(visible=False)
             with gr.Accordion("Tool calls", open=False, visible=False) as tool_calls_acc:
                 tool_calls_md = gr.Markdown()

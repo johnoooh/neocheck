@@ -8,6 +8,9 @@ anthropic>=0.40.0
 transformers>=4.46
 accelerate>=1.0
 torch>=2.4
+# Required to load cyankiwi/Qwen3.6-27B-AWQ-INT4 (DEFAULT_LOCAL_MODEL_ID).
+# transformers dispatches to AWQ kernels automatically when autoawq is present.
+autoawq>=0.2.7
 huggingface_hub>=0.26
 datasets>=3.0
 spaces>=0.30

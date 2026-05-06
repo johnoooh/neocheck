@@ -4,7 +4,7 @@ emoji: 🧬
 colorFrom: indigo
 colorTo: pink
 sdk: gradio
-sdk_version: "6.14.0"
+sdk_version: "6.13.0"
 app_file: gradio_app.py
 python_version: "3.12"
 hardware: zero-a10g

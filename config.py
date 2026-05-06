@@ -83,7 +83,9 @@ SCORING_WEIGHTS = {
 AI_MODEL = "claude-sonnet-4-20250514"  # or "claude-3-5-sonnet-20241022" if 404 error
 
 # Default open-weight model used when no Anthropic key is provided.
-DEFAULT_LOCAL_MODEL_ID = "Qwen/Qwen3-14B"
+# AWQ INT4 quant of Qwen3.6-27B (~20.4 GB) — runs on ZeroGPU with materially
+# better quality than the previous Qwen3-14B FP16 (~29.5 GB) for less VRAM.
+DEFAULT_LOCAL_MODEL_ID = "cyankiwi/Qwen3.6-27B-AWQ-INT4"
 
 # Fallback when ZeroGPU quota is exhausted — smaller, less capable.
 FALLBACK_LOCAL_MODEL_ID = "Qwen/Qwen3-4B"
