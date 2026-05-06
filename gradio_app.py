@@ -72,7 +72,6 @@ def _bootstrap_node_mcps() -> None:
 _bootstrap_node_mcps()
 
 import gradio as gr
-import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -496,6 +495,47 @@ def _publications_html(pubs: list[dict]) -> str:
     return "".join(out)
 
 
+def _all_epitopes_html(epitopes: list[dict]) -> str:
+    if not epitopes:
+        return "<p><i>No epitopes to display.</i></p>"
+    head = (
+        "<style>"
+        ".ne-tbl{border-collapse:collapse;width:100%;font-size:0.92rem;}"
+        ".ne-tbl thead th{position:sticky;top:0;background:#f5f5f7;"
+        "border-bottom:2px solid #d0d0d5;padding:6px 10px;text-align:left;}"
+        ".ne-tbl tbody td{padding:5px 10px;border-bottom:1px solid #ececec;"
+        "vertical-align:top;}"
+        ".ne-tbl tbody tr:nth-child(even){background:#fafafa;}"
+        ".ne-tbl .match{color:#2e7d32;font-weight:600;}"
+        ".ne-tbl-wrap{max-height:420px;overflow:auto;border:1px solid #e0e0e0;"
+        "border-radius:6px;}"
+        "</style>"
+    )
+    rows = []
+    for i, ep in enumerate(epitopes, 1):
+        seq = _esc(ep.get("linear_sequence", "N/A"))
+        mut = _esc(ep.get("mutation", ""))
+        summary = _esc(summarize_epitope(ep))
+        match = '<span class="match">Yes</span>' if ep.get("hla_matched") else ""
+        alleles = _esc("; ".join(ep.get("mhc_alleles") or []))
+        pdb = _esc("; ".join(ep.get("pdb_ids") or []))
+        rows.append(
+            f"<tr><td>{i}</td><td><code>{seq}</code></td><td>{mut}</td>"
+            f"<td>{summary}</td><td>{match}</td><td>{alleles}</td>"
+            f"<td>{ep.get('tcell_assay_count', 0)}</td>"
+            f"<td>{ep.get('tcr_count', 0)}</td><td>{pdb}</td></tr>"
+        )
+    body = (
+        '<div class="ne-tbl-wrap"><table class="ne-tbl"><thead><tr>'
+        '<th>Rank</th><th>Sequence</th><th>Mutation</th><th>Summary</th>'
+        '<th>HLA Match</th><th>MHC Alleles</th><th>T-cell Assays</th>'
+        '<th>TCRs</th><th>PDB</th></tr></thead><tbody>'
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
+    return head + body
+
+
 def _hla_info_html(hla_info: list[dict]) -> str:
     if not hla_info:
         return "<p><i>No HLA information available.</i></p>"
@@ -591,23 +631,9 @@ def _format_outputs(results: dict, *, partial: bool = False, state: dict | None 
             _epitope_card_html(ep, i + 1, detailed[i] if i < len(detailed) else None)
             for i, ep in enumerate(epitopes[:3])
         )
-        rows = []
-        for i, ep in enumerate(epitopes, 1):
-            rows.append({
-                "Rank": i,
-                "Sequence": ep.get("linear_sequence", "N/A"),
-                "Mutation": ep.get("mutation", ""),
-                "Summary": summarize_epitope(ep),
-                "HLA Match": "Yes" if ep.get("hla_matched") else "",
-                "MHC Alleles": "; ".join(ep.get("mhc_alleles") or []),
-                "T-cell Assays": ep.get("tcell_assay_count", 0),
-                "TCRs": ep.get("tcr_count", 0),
-                "PDB": "; ".join(ep.get("pdb_ids") or []),
-            })
-        all_df = pd.DataFrame(rows)
     else:
         top_html = "<p><i>No epitopes found for this mutation. Try removing the neoantigen filter in Advanced Options.</i></p>"
-        all_df = pd.DataFrame()
+    all_html_value = _all_epitopes_html(epitopes)
 
     # raw_json is shipped as a string into a syntax-highlighted gr.Code
     # component. Each token in the parsed tree becomes a Svelte reactive
@@ -647,7 +673,7 @@ def _format_outputs(results: dict, *, partial: bool = False, state: dict | None 
         gr.update(visible=True),                    # results_section
         metrics_md,                                  # metrics_md
         top_html,                                    # top_html
-        all_df,                                      # all_df
+        all_html_value,                              # all_html
         raw_json_out,                                # raw_json (gr.Code)
         _trials_html(trials),                        # trials_html
         _publications_html(publications),            # pubs_html
@@ -1096,7 +1122,7 @@ def build_ui() -> gr.Blocks:
                 with gr.Tab("Top Epitopes"):
                     top_html = gr.HTML()
                 with gr.Tab("All Epitopes"):
-                    all_df = gr.Dataframe(interactive=False, wrap=True, max_height=420)
+                    all_html = gr.HTML()
                 with gr.Tab("Scoring"):
                     gr.Markdown(SCORING_MD)
                 with gr.Tab("Raw Data"):
@@ -1202,7 +1228,7 @@ def build_ui() -> gr.Blocks:
                 cancer_type, neoantigen_only, max_epitopes, max_trials, max_pubs,
             ],
             outputs=[
-                results_section, metrics_md, top_html, all_df, raw_json,
+                results_section, metrics_md, top_html, all_html, raw_json,
                 trials_html, pubs_html, hla_html,
                 json_dl, csv_dl, html_dl,
                 results_state,
