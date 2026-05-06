@@ -1044,7 +1044,7 @@ def build_ui() -> gr.Blocks:
             chat_context_md = gr.Markdown(_format_chat_context(None))
             chat_state = gr.State(_initial_chat_state())
 
-            chatbot = gr.Chatbot(height=520, type="messages")
+            chatbot = gr.Chatbot(height=520)
             viz_html = gr.HTML(visible=False)
             with gr.Accordion("Tool calls", open=False, visible=False) as tool_calls_acc:
                 tool_calls_md = gr.Markdown()
