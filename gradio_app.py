@@ -1081,7 +1081,7 @@ def build_ui() -> gr.Blocks:
                 with gr.Accordion("Advanced Options", open=False):
                     cancer_type = gr.Dropdown(label="Cancer Type (optional)", choices=CANCER_TYPES, value=CANCER_TYPES[0])
                     neoantigen_only = gr.Checkbox(label="Neoantigen epitopes only", value=True)
-                    max_epitopes = gr.Slider(10, 100, value=20, step=5, label="Max epitopes to retrieve")
+                    max_epitopes = gr.Slider(5, 50, value=10, step=5, label="Max epitopes to retrieve")
                     max_trials = gr.Slider(5, 20, value=5, step=1, label="Max clinical trials")
                     max_pubs = gr.Slider(5, 20, value=5, step=1, label="Max publications")
 
