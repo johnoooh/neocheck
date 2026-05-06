@@ -15,248 +15,151 @@ short_description: Cancer neoantigen and HLA analysis assistant
 
 # 🧬 NeoCheck
 
-**Neoantigen HLA Compatibility Checker** — v1.0
+**Neoantigen × HLA compatibility checker for cancer immunotherapy research.**
 
-Analyze cancer mutations and HLA types to identify personalized immunotherapy opportunities. NeoCheck integrates four public biomedical databases to surface relevant epitopes, T-cell evidence, clinical trials, and publications for any gene–mutation–HLA combination.
+Given a cancer mutation and a patient's HLA typing, NeoCheck pulls together
+epitope evidence, T-cell assays, TCR sequences, clinical trials, and recent
+publications from four public databases — and lets you have a follow-up
+conversation with an LLM that can dig deeper using the same data sources.
 
----
+## What it does
 
-## Overview
+- **Searches CEDAR / IEDB** for known epitopes carrying your mutation, with
+  HLA-restriction filtering and an immunogenicity composite score.
+- **Validates the patient's HLA alleles** against IMGT/HLA, including
+  expression status and citations.
+- **Pulls relevant clinical trials** from ClinicalTrials.gov.
+- **Surfaces recent literature** from PubMed.
+- **Hands the results to an LLM** that can call the same MCP tools to answer
+  follow-up questions, compare alleles, or pull deeper structural data.
 
-NeoCheck is a Streamlit web application designed for researchers investigating neoantigen-based immunotherapy. Given a cancer mutation and a patient's HLA typing, it:
+No API keys are required for the analysis. The chat assistant runs on either
+a free local model (Qwen3-14B / 4B on Hugging Face ZeroGPU) or your own
+Anthropic API key — your choice in the sidebar.
 
-- Searches for known epitopes harboring that mutation
-- Identifies which epitopes are restricted to the patient's HLA alleles
-- Summarizes the supporting evidence (T-cell assays, TCR sequences, MHC ligand data, crystal structures)
-- Finds relevant clinical trials currently recruiting
-- Retrieves recent publications from the literature
+## Try it
 
-No API keys are required — all data sources are publicly accessible.
+Hosted Gradio Space (ZeroGPU): https://huggingface.co/spaces/Johnoooh/neocheck-gradio
 
-## Data Sources
+## Data sources
 
-| Source | What it provides | URL |
-|--------|-----------------|-----|
-| **CEDAR** (IEDB) | Epitope structures, T-cell assays, TCR sequences, MHC ligand assays, PDB structures | [cedar.iedb.org](https://cedar.iedb.org) |
-| **IMGT/HLA** (EBI) | HLA allele validation, accession numbers, metadata, citations | [ebi.ac.uk/ipd/imgt/hla](https://www.ebi.ac.uk/ipd/imgt/hla/) |
-| **ClinicalTrials.gov** | Recruiting immunotherapy and neoantigen vaccine trials | [clinicaltrials.gov](https://clinicaltrials.gov) |
-| **PubMed** | Recent publications on the mutation and neoantigen context | [pubmed.ncbi.nlm.nih.gov](https://pubmed.ncbi.nlm.nih.gov) |
+| Source | What it provides | Access |
+|---|---|---|
+| **CEDAR (IEDB)** | Epitope structures, T-cell assays, TCR sequences, MHC ligand assays, PDB structures | Public REST + MCP server |
+| **IMGT/HLA (EBI)** | HLA allele validation, accession, metadata, citations, sequence comparisons | Public REST + MCP server |
+| **ClinicalTrials.gov** | Trial registry — recruiting immunotherapy and neoantigen-vaccine trials | API v2 + MCP server |
+| **PubMed** | Recent literature on the gene, mutation, and immunotherapy context | E-utilities + MCP server |
 
-## Quick Start
+## Architecture
 
-### Prerequisites
+```
+                 ┌────────────────────────┐
+                 │   Gradio UI (gr.Blocks)│
+                 │   gradio_app.py        │
+                 └──────────┬─────────────┘
+                            │
+        ┌───────────────────┼───────────────────────┐
+        │                   │                       │
+        ▼                   ▼                       ▼
+ analyzers/         clients/chat_client.py     clients/llm_provider.py
+ (epitope, hla,     ├ async send_message       ├ AnthropicProvider
+  trial, pubs)      ├ tool-use loop            └ LocalProvider (@spaces.GPU
+                    └ html_outputs                  → Qwen3-14B / 4B)
+                            │
+                            ▼
+                  clients/mcp_session.py
+                  clients/mcp_manager.py
+                            │
+        ┌───────────┬───────┴───────┬───────────────┐
+        ▼           ▼               ▼               ▼
+   CEDAR MCP   IMGT/HLA MCP   ClinicalTrials MCP  PubMed MCP
+   (Node.js)   (Node.js)      (Node.js / Bun)     (Python)
+```
 
-- Python 3.10 or higher
-- pip
+The four MCP servers ship vendored under `mcp/` with their `dist/`
+directories committed so the Gradio Space (which has no Dockerfile)
+can launch them directly. `python -m pubmedmcp` runs from
+`mcp/pubmedmcp/src/`; the Node servers run via `node dist/index.js`.
 
-### Install and Run
+## Quick start (local)
 
 ```bash
-# Clone the repository
-git clone <your-repo-url>
-cd neocheck
+# Python 3.12 venv; works with uv, pip, or conda
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
 
-# Install dependencies
-pip install -r requirements.txt
+# Make sure node 18+ is on PATH (for the JS-based MCP servers)
+node --version
 
-# Launch the app
-streamlit run app.py
+# Run the Gradio UI on http://localhost:7860
+.venv/bin/python gradio_app.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
+The Streamlit version is still in the repo as `app.py` (`streamlit run app.py`)
+and has feature parity with the Gradio app for the analysis flow. The Gradio
+app is the supported entry point.
 
-## Project Structure
+## Configuration
+
+| Env var | Purpose | Required |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | If you want to use the Anthropic chat path from the CLI / tests. The UI accepts a key directly via the sidebar. | No |
+| `HF_TOKEN` | Lets the chat-feedback button write to a Hugging Face dataset. Configure as a Space secret. | Optional |
+| `NEOCHECK_FEEDBACK_DATASET` | The dataset repo (e.g. `your-username/neocheck-feedback`) that feedback is appended to. | Optional |
+| `GRADIO_SSR_MODE` | Set to `False` if you ever see the Node sidecar getting killed; `gradio_app.py` already does this. | No |
+
+## Tech stack
+
+- **UI:** Gradio 6.14 (`gradio_app.py`) — `gr.Blocks` with custom HTML cards,
+  chat panel, and sandboxed `<iframe srcdoc>` for IMGT visualizations.
+  Streamlit (`app.py`) kept as a working fallback.
+- **LLM providers:**
+  - **Local:** Qwen3-14B (Qwen3-4B fallback toggle) via `transformers`,
+    wrapped in `@spaces.GPU(duration=180)` for ZeroGPU.
+  - **API:** Anthropic Claude via the `anthropic` SDK; bring-your-own-key
+    selectable in the sidebar.
+- **MCP:** Custom `MCPManager` / `MCPSession` over stdio. Per-session lazy
+  initialization so each ZeroGPU worker starts its own server pool on the
+  first chat message.
+- **Score:** 0–100 composite — T-cell assays (25), positive-response ratio
+  (20), TCR sequences (20), MHC ligand assays (15), PDB structure (10), HLA
+  match bonus (+10). See the **Scoring** tab in the app for the full
+  breakdown.
+
+## Repository layout
 
 ```
-neocheck/
-├── app.py                          # Main Streamlit application
-├── config.py                       # API URLs, gene/mutation references, constants
-├── requirements.txt                # Python dependencies
-├── .streamlit/
-│   └── config.toml                 # Streamlit theme configuration
-├── clients/                        # REST API client modules
-│   ├── cedar_client.py             # CEDAR epitope database (PostgREST)
-│   ├── imgt_client.py              # IMGT/HLA allele database (EBI REST)
-│   ├── clinicaltrials_client.py    # ClinicalTrials.gov v2 API
-│   └── pubmed_client.py            # PubMed E-utilities (ESearch + EFetch)
-├── analyzers/                      # Analysis orchestration
-│   ├── epitope_analyzer.py         # Epitope search, HLA matching, evidence gathering
-│   ├── hla_analyzer.py             # HLA allele validation via IMGT
-│   ├── trial_analyzer.py           # Clinical trial search and filtering
-│   └── publication_analyzer.py     # PubMed literature search
-└── utils/                          # Shared utilities
-    ├── scoring.py                  # Epitope ranking and evidence summarization
-    ├── validators.py               # Input validation (mutations, HLA alleles)
-    └── formatters.py               # Export formatting (JSON, CSV, HTML report)
+gradio_app.py            # Gradio entry point (HF Spaces app_file)
+app.py                   # Streamlit version (kept as fallback)
+config.py                # System prompts, MCP server registry, model IDs
+requirements.txt         # Python deps
+packages.txt             # apt deps for HF Spaces (just nodejs)
+
+analyzers/               # Pure-Python analysis: epitope, HLA, trials, pubs
+clients/                 # LLM providers + MCP client glue
+  ├ anthropic_provider.py
+  ├ local_provider.py    # @spaces.GPU-decorated Qwen entry
+  ├ local_model.py
+  ├ chat_client.py       # async + sync send_message; tool-use loop
+  ├ llm_provider.py      # Protocol + build_provider() factory
+  ├ mcp_manager.py       # stdio subprocess pool
+  └ mcp_session.py       # lifecycle wrapper
+utils/                   # Validators, formatters, scoring, rate-limit, feedback
+mcp/                     # Vendored MCP servers (with prebuilt dist/ committed)
+  ├ CEDARMCP/            # Node.js
+  ├ imgt-hla-mcp/        # Node.js
+  ├ clinicaltrialsgov-mcp-server/  # Bun-built JS
+  └ pubmedmcp/           # Python
+tests/                   # pytest suite (101 tests)
 ```
-
-## Usage
-
-1. **Enter a mutation** — Type any gene name (e.g., `KRAS`, `BRAF`, `TP53`, `EGFR`) and mutation (e.g., `G12D`, `V600E`). Common mutations are suggested for well-known oncogenes.
-
-2. **Enter HLA alleles** — Provide at least one HLA allele. The app supports HLA-A, HLA-B, and HLA-C loci. Accepted formats include `A*02:01`, `HLA-A*02:01`, or `A*02:01:01:01`.
-
-3. **Click "Run Analysis"** — The app queries all four databases with a progress indicator.
-
-4. **Review results:**
-   - **Summary metrics** — Epitope count, T-cell assays, clinical trials, publications
-   - **Top Epitopes** — Detailed cards with evidence summaries, TCR sequences, and assay data
-   - **All Epitopes** — Sortable table view with descriptive summaries
-   - **Clinical Trials** — Expandable cards with status, phase, enrollment, and links
-   - **Publications** — Titles, authors, abstracts, and PubMed links
-   - **HLA Information** — IMGT validation status and allele metadata
-
-5. **Export** — Download results as JSON, CSV, or a standalone HTML report.
-
-6. **AI Analysis** (optional) — Scroll to the AI section, enter your Anthropic API key, and click "Run AI Analysis". Claude will use MCP tools to investigate your results in depth and provide a clinical interpretation.
-
-### Quick Examples
-
-The app includes pre-configured example buttons:
-- **KRAS G12D** + HLA-A\*02:01 / HLA-A\*11:01
-- **BRAF V600E** + HLA-A\*02:01 / HLA-A\*03:01
-
-## Features (v1)
-
-- Free-text gene and mutation input (not restricted to a preset list)
-- HLA-A, HLA-B, and HLA-C allele support
-- Epitope search with neoantigen filtering via CEDAR
-- HLA-matched epitope identification and ranking
-- Descriptive evidence summaries for each epitope
-- T-cell assay and TCR sequence details for top epitopes
-- HLA allele validation against IMGT/HLA
-- Clinical trial search filtered by cancer type
-- PubMed literature search
-- Advanced options (cancer type filter, neoantigen-only toggle, result limits)
-- Export to JSON, CSV, and standalone HTML report
-- Aggressive caching to minimize redundant API calls
-- **AI-powered analysis** via Claude with MCP tool access to all 4 databases
-- Research disclaimer
-
-## AI Analysis Setup
-
-The AI tab uses the Anthropic Messages API to send your results to Claude, which can then call MCP tools to investigate further. This requires:
-
-### 1. Anthropic API Key
-
-Get an API key from [console.anthropic.com](https://console.anthropic.com):
-1. Create an account (or sign in)
-2. Go to **API Keys** and create a new key
-3. Add billing — the API is pay-per-token
-
-> **Important:** A Claude Max/Pro subscription (claude.ai) does **not** include API access. The API is a separate product with separate billing.
-
-You can provide the key in two ways:
-- **Environment variable** (recommended): `export ANTHROPIC_API_KEY=sk-ant-...`
-- **UI input**: Enter it directly in the AI Analysis section (stored in session only, never persisted)
-
-### 2. Build the MCP Servers
-
-The AI tab launches 4 MCP servers as subprocesses. They must be built first:
-
-```bash
-# From the NeoCheck project root (parent of neocheck/)
-
-# CEDAR (Node.js)
-cd CEDARMCP && npm install && npm run build && cd ..
-
-# IMGT/HLA (Node.js)
-cd imgt-hla-mcp && npm install && npm run build && cd ..
-
-# ClinicalTrials.gov (requires bun — install from bun.sh)
-cd clinicaltrialsgov-mcp-server && bun install && bun run build && cd ..
-
-# PubMed (Python)
-cd pubmedmcp && pip install -e . && cd ..
-```
-
-**Prerequisites:**
-- Node.js 20+ (`node --version`)
-- Bun (`bun --version`) — install from [bun.sh](https://bun.sh)
-- Python 3.12+
-
-### 3. Run
-
-```bash
-# Optional: set API key as env var
-export ANTHROPIC_API_KEY=sk-ant-...
-
-cd neocheck
-streamlit run app.py
-```
-
-Run a standard analysis first, then scroll down to the AI section and click "Run AI Analysis".
-
-## Coming Soon
-
-- **Docker containerization** — One-command deployment with Docker
-- **HLA Class II support** — DRB1, DQB1, and other Class II loci
-- **Batch analysis** — Analyze multiple mutations in a single run
-- **Interactive visualizations** — Plotly charts for epitope comparisons and evidence landscapes
-- **Streaming AI responses** — Real-time display as Claude generates its analysis
-
-## Deployment
-
-### Streamlit Community Cloud (simplest)
-
-1. Push your code to a GitHub repository
-2. Go to [share.streamlit.io](https://share.streamlit.io)
-3. Connect your repository and set the main file path to `app.py`
-4. Deploy — no server configuration needed
-
-### Docker
-
-Create a `Dockerfile` in the project root:
-
-```dockerfile
-FROM python:3.12-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 8501
-
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
-
-ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
-```
-
-Then build and run:
-
-```bash
-docker build -t neocheck .
-docker run -p 8501:8501 neocheck
-```
-
-### Generic Server
-
-For a production deployment behind a reverse proxy (e.g., nginx):
-
-```bash
-# Install dependencies in a virtual environment
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Run with nohup or a process manager (systemd, supervisor)
-streamlit run app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
-```
-
-Point your reverse proxy to `http://localhost:8501` and configure WebSocket support for Streamlit's live connection.
-
-## Dependencies
-
-| Package | Purpose |
-|---------|---------|
-| `streamlit` >= 1.32.0 | Web application framework |
-| `pandas` >= 2.0.0 | Data manipulation and table display |
-| `plotly` >= 5.18.0 | Interactive visualizations (used in future features) |
-| `requests` >= 2.31.0 | HTTP client for all API calls |
-| `anthropic` >= 0.40.0 | Claude AI API client (for AI Analysis tab) |
 
 ## Disclaimer
 
-This tool is for **research purposes only**. Results should not be used for clinical decision-making without professional medical review. Always consult qualified healthcare professionals for patient care decisions.
+NeoCheck is a research tool. Results should not drive clinical
+decision-making without independent professional review. The composite
+score is a heuristic over public evidence; it does not predict patient
+response to any specific therapy.
+
+## License
+
+MIT.
