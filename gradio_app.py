@@ -42,7 +42,9 @@ def _bootstrap_node_mcps() -> None:
     npm = shutil.which("npm")
     if not npm:
         return
-    for sub in ("CEDARMCP", "imgt-hla-mcp", "clinicaltrialsgov-mcp-server"):
+    # ctgov ships a self-bundled dist/index.js (no external deps) and its
+    # `prepare` script needs bun, which isn't on Spaces — skip it.
+    for sub in ("CEDARMCP", "imgt-hla-mcp"):
         cwd = os.path.join(base, "mcp", sub)
         if not os.path.isdir(cwd):
             continue
@@ -54,7 +56,8 @@ def _bootstrap_node_mcps() -> None:
         print(f"[bootstrap] npm ci in {sub}…", flush=True)
         try:
             subprocess.run(
-                [npm, "ci", "--omit=dev", "--no-audit", "--no-fund", "--legacy-peer-deps"],
+                [npm, "ci", "--omit=dev", "--no-audit", "--no-fund",
+                 "--legacy-peer-deps", "--ignore-scripts"],
                 cwd=cwd,
                 timeout=300,
                 check=True,
