@@ -18,6 +18,7 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
@@ -100,6 +101,52 @@ from utils.validators import (  # noqa: E402
 
 # Process-wide rate limiter (matches app.py)
 _RATE_LIMITER = RateLimiter()
+
+
+# ---------------------------------------------------------------------------
+# Server-side results registry
+# ---------------------------------------------------------------------------
+# The full analysis results dict is large (epitope arrays, TCR data, MHC
+# ligand assays — easily multi-MB for common mutations like KRAS G12D).
+# Putting that in `gr.State` ships it to the browser and makes Svelte
+# revive every nested object as a reactive proxy on every update, which
+# overflows the discard Set after a couple of yields ("RangeError: Set
+# maximum size exceeded"). Instead we keep the heavy payload server-side
+# in this token-keyed dict, and only ship a slim `{token, gene, mutation,
+# hla_alleles}` reference through gr.State.
+_RESULTS_BY_TOKEN: dict[str, tuple[float, dict[str, Any]]] = {}
+_RESULTS_TTL_SECONDS = 3600  # 1 hour
+
+
+def _register_results(results: dict[str, Any]) -> str:
+    now = time.time()
+    # Opportunistic eviction of expired entries
+    expired = [k for k, (ts, _) in _RESULTS_BY_TOKEN.items() if now - ts > _RESULTS_TTL_SECONDS]
+    for k in expired:
+        _RESULTS_BY_TOKEN.pop(k, None)
+    token = uuid.uuid4().hex
+    _RESULTS_BY_TOKEN[token] = (now, results)
+    return token
+
+
+def _lookup_results(state: dict | None) -> dict[str, Any] | None:
+    if not state:
+        return None
+    token = state.get("token")
+    if not token:
+        return None
+    entry = _RESULTS_BY_TOKEN.get(token)
+    return entry[1] if entry else None
+
+
+def _slim_state(token: str, results: dict[str, Any]) -> dict[str, Any]:
+    """The shape that actually crosses the websocket into gr.State."""
+    return {
+        "token": token,
+        "gene": results.get("gene"),
+        "mutation": results.get("mutation"),
+        "hla_alleles": results.get("hla_alleles", []),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +290,10 @@ def run_analysis(
     # placeholder so the user sees activity within ~50ms of clicking Run.
     # Without this, the first yield only fires after the parallel block
     # completes (10–30s), which feels like a freeze.
+    token = _register_results(results)
+    slim = _slim_state(token, results)
     progress(0.05, desc="Starting…")
-    yield _format_outputs(results, partial=True)
+    yield _format_outputs(results, partial=True, state=slim)
 
     progress(0.10, desc="Querying CEDAR, IMGT, ClinicalTrials & PubMed in parallel…")
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -288,9 +337,12 @@ def run_analysis(
             results["publications"] = []
 
     # Yield partial results so the UI can paint epitopes/trials/pubs/HLA
-    # while the per-epitope detail calls run.
+    # while the per-epitope detail calls run. Re-register so the lookup
+    # entry's TTL stamp refreshes; token stays the same so the slim state
+    # the browser already holds remains valid.
+    _RESULTS_BY_TOKEN[token] = (time.time(), results)
     progress(0.75, desc="Fetching detailed data for top epitopes…")
-    yield _format_outputs(results, partial=True)
+    yield _format_outputs(results, partial=True, state=slim)
 
     top = results["epitopes"].get("epitopes", [])[:3]
     detailed: list[Any] = [None] * len(top)
@@ -309,7 +361,8 @@ def run_analysis(
     results["detailed_epitopes"] = detailed
 
     progress(1.0, desc="Done")
-    yield _format_outputs(results)
+    _RESULTS_BY_TOKEN[token] = (time.time(), results)
+    yield _format_outputs(results, state=slim)
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +566,7 @@ def _write_temp(name: str, body: str) -> str:
     return path
 
 
-def _format_outputs(results: dict, *, partial: bool = False):
+def _format_outputs(results: dict, *, partial: bool = False, state: dict | None = None):
     epitope_data = results.get("epitopes", {}) or {}
     epitopes = epitope_data.get("epitopes", []) or []
     trials = results.get("trials", []) or []
@@ -582,7 +635,7 @@ def _format_outputs(results: dict, *, partial: bool = False):
         json_dl,                                     # json_dl
         csv_dl,                                      # csv_dl
         html_dl,                                     # html_dl
-        results,                                     # results_state
+        state if state is not None else results,     # results_state (slim)
     )
 
 
@@ -837,7 +890,11 @@ async def handle_chat(
 
     analyzer = ChatAnalyzer(provider=provider, mcp_manager=state["mcp_session"].manager)
 
-    patient_context = format_results_for_chat(results_state) if not state["history"] else None
+    # results_state is the slim {token, gene, mutation, hla_alleles} dict;
+    # the full results live in the server-side registry to keep the gr.State
+    # payload tiny (avoids Svelte revive overflow on large epitope arrays).
+    full_results = _lookup_results(results_state) or results_state
+    patient_context = format_results_for_chat(full_results) if not state["history"] else None
 
     progress(0.6, desc="Thinking… (running tool calls if needed)")
     try:
