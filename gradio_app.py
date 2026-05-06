@@ -239,6 +239,13 @@ def run_analysis(
         full = normalize_hla_allele_full(a)
         full_alleles.append(full or a.replace("HLA-", ""))
 
+    # Immediate first paint: makes the results section visible with a
+    # placeholder so the user sees activity within ~50ms of clicking Run.
+    # Without this, the first yield only fires after the parallel block
+    # completes (10–30s), which feels like a freeze.
+    progress(0.05, desc="Starting…")
+    yield _format_outputs(results, partial=True)
+
     progress(0.10, desc="Querying CEDAR, IMGT, ClinicalTrials & PubMed in parallel…")
     with ThreadPoolExecutor(max_workers=4) as pool:
         f_ep = pool.submit(
